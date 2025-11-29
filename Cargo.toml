@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "OpenID Connect IdP with federation, property storage, and auto-registration the center of gravity between multiple objects."
+repository = "https://github.com/CloudNebulaProject/barycenter"
+homepage = "https://github.com/CloudNebulaProject/barycenter"
+documentation = "https://github.com/CloudNebulaProject/barycenter/blob/main/README.md"
+keywords = ["openid", "oauth2", "identity", "authentication", "oidc"]
+categories = ["authentication", "web-programming"]
 
 [dependencies]
 axum = { version = "0.8", features = ["json", "form"] }
