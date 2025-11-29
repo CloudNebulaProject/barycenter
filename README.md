@@ -150,6 +150,43 @@ This is an early-stage implementation. See `docs/next-iteration-plan.md` for pla
 - Token revocation and introspection
 - OpenID Federation support
 
+## Deployment
+
+Barycenter supports multiple deployment platforms:
+
+- **Docker**: Pre-built images available at `ghcr.io/[owner]/barycenter`
+- **Kubernetes**: Helm chart with Ingress and Gateway API support
+- **Linux**: systemd service with security hardening
+- **FreeBSD**: rc.d init script
+- **illumos/Solaris**: SMF manifest
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed installation instructions for each platform.
+
+### Quick Start with Docker
+
+```bash
+docker pull ghcr.io/[owner]/barycenter:latest
+docker run -p 8080:8080 -v barycenter-data:/app/data ghcr.io/[owner]/barycenter:latest
+```
+
+### Quick Start with Helm
+
+```bash
+helm install barycenter ./deploy/helm/barycenter \
+  --namespace barycenter \
+  --create-namespace
+```
+
+## Releases
+
+For maintainers: see [RELEASE.md](RELEASE.md) for the release process.
+
+To create a new release:
+```bash
+cargo install cargo-release
+cargo release minor --execute  # Bumps version and creates release
+```
+
 ## Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, development workflow, and the process for submitting pull requests.

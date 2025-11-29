@@ -51,3 +51,21 @@ urlencoding = "2"
 
 [profile.release]
 debug = 1
+
+# cargo-release configuration
+[package.metadata.release]
+# Ensure version is updated in Cargo.toml
+pre-release-commit-message = "chore: release {{version}}"
+# Create a git tag
+tag-message = "chore: release {{version}}"
+tag-name = "v{{version}}"
+# Push changes and tags
+push = true
+# Require branch to be main
+allow-branch = ["main"]
+# Run tests before releasing
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+  { file = "deploy/helm/barycenter/Chart.yaml", search = "version: .*", replace = "version: {{version}}" },
+  { file = "deploy/helm/barycenter/Chart.yaml", search = "appVersion: .*", replace = "appVersion: \"{{version}}\"" },
+]
