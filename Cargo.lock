@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "barycenter"
-version = "0.2.0-alpha.10"
+version = "0.2.0-alpha.11"
 dependencies = [
  "anyhow",
  "argon2",
