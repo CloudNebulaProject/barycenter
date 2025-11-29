@@ -25,12 +25,38 @@ cargo run --release
 # Check code without building
 cargo check
 
-# Run tests
-cargo test
+# Run tests (IMPORTANT: use cargo nextest, not cargo test)
+cargo nextest run
 
 # Run with logging (uses RUST_LOG environment variable)
 RUST_LOG=debug cargo run
 RUST_LOG=barycenter=trace cargo run
+```
+
+## Testing
+
+**CRITICAL: Always use `cargo nextest run` instead of `cargo test`.**
+
+This project uses [cargo-nextest](https://nexte.st/) for running tests because:
+- Tests run in separate processes, preventing port conflicts in integration tests
+- Better test isolation and reliability
+- Cleaner output and better performance
+
+Install nextest if you don't have it:
+```bash
+cargo install cargo-nextest
+```
+
+Run tests:
+```bash
+# Run all tests
+cargo nextest run
+
+# Run with verbose output
+cargo nextest run --verbose
+
+# Run specific test
+cargo nextest run test_name
 ```
 
 ## Configuration

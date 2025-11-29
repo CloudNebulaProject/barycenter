@@ -218,20 +218,35 @@ docs: update API endpoint documentation
 
 ## Testing
 
+**IMPORTANT: We use `cargo nextest` for running tests, not `cargo test`.**
+
+Nextest runs tests in separate processes, which prevents port conflicts and other issues when running integration tests in parallel.
+
 - Write unit tests for new functions
 - Add integration tests for new endpoints
 - Test both success and error cases
 - Aim for meaningful test coverage
 
+### Installing nextest
+
+```bash
+cargo install cargo-nextest
+```
+
+### Running Tests
+
 ```bash
 # Run all tests
-cargo test
+cargo nextest run
 
 # Run specific test
-cargo test test_name
+cargo nextest run test_name
 
-# Run with output
-cargo test -- --nocapture
+# Run with verbose output
+cargo nextest run --verbose
+
+# Run in release mode
+cargo nextest run --release
 ```
 
 ## Documentation

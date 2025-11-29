@@ -91,12 +91,17 @@ cargo check
 
 ### Testing
 
+**This project uses [cargo-nextest](https://nexte.st/) for running tests.**
+
 ```bash
+# Install nextest (one-time setup)
+cargo install cargo-nextest
+
 # Run all tests
-cargo test
+cargo nextest run
 
 # Run tests with logging
-RUST_LOG=debug cargo test
+RUST_LOG=debug cargo nextest run
 ```
 
 ### Logging
