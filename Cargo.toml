@@ -59,6 +59,8 @@ debug = 1
 
 # cargo-release configuration
 [package.metadata.release]
+# Skip publishing to crates.io
+publish = false
 # Ensure version is updated in Cargo.toml
 pre-release-commit-message = "chore: release {{version}}"
 # Create a git tag
