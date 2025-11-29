@@ -1,0 +1,53 @@
+[package]
+name = "barycenter"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "OpenID Connect IdP with federation, property storage, and auto-registration the center of gravity between multiple objects."
+
+[dependencies]
+axum = { version = "0.8", features = ["json", "form"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4", features = ["derive"] }
+miette = { version = "7", features = ["fancy"] }
+thiserror = "1"
+config = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+
+# SeaORM for SQLite
+sea-orm = { version = "1", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+
+# JOSE / JWKS & JWT
+josekit = "0.10"
+
+chrono = { version = "0.4", features = ["serde", "clock"] }
+time = "0.3"
+rand = "0.8"
+base64ct = { version = "1", features = ["alloc"] }
+anyhow = "1"
+sha2 = "0.10"
+serde_urlencoded = "0.7"
+
+# Password hashing
+argon2 = "0.5"
+
+# Rate limiting
+tower = "0.5"
+tower_governor = "0.4"
+
+# Validation
+regex = "1"
+url = "2"
+
+[dev-dependencies]
+openidconnect = { version = "4", features = ["reqwest-blocking"] }
+oauth2 = "5"
+reqwest = { version = "0.12", features = ["blocking", "json", "cookies"] }
+urlencoding = "2"
+
+[profile.release]
+debug = 1

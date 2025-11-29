@@ -1,0 +1,16 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+# Uncomment for production with HTTPS:
+# public_base_url = "https://idp.example.com"
+
+[database]
+url = "sqlite://crabidp.db?mode=rwc"
+
+[keys]
+jwks_path = "data/jwks.json"
+private_key_path = "data/private_key.pem"
+alg = "RS256"
+
+[federation]
+trust_anchors = []

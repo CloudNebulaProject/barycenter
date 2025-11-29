@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(curl:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "Bash(jq:*)",
+      "Bash(cargo install:*)",
+      "Bash(cargo nextest run:*)",
+      "Bash(RUST_BACKTRACE=1 cargo nextest run:*)",
+      "Bash(lsof:*)",
+      "Bash(pkill:*)",
+      "mcp__github__search_repositories",
+      "mcp__github__get_me",
+      "mcp__github__search_users"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

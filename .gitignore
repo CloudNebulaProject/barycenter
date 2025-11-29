@@ -1,0 +1,29 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Application-specific
+/keys/
+/jwks.json
+/private_key.json
+/data/jwks.json
+/data/private_key.pem
+*.db
+*.db-shm
+*.db-wal
+
+# Environment and config (optional - uncomment if you want to ignore local configs)
+# config.toml
+# .env
