@@ -1,0 +1,131 @@
+# Default values for barycenter Helm chart
+
+replicaCount: 1
+
+image:
+  repository: barycenter
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: idp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: barycenter-tls
+  #    hosts:
+  #      - idp.example.com
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Barycenter-specific configuration
+config:
+  server:
+    host: "0.0.0.0"
+    port: 8080
+    # publicBaseUrl: "https://idp.example.com"
+
+  database:
+    url: "sqlite:///app/data/crabidp.db?mode=rwc"
+
+  keys:
+    jwksPath: "/app/data/jwks.json"
+    privateKeyPath: "/app/data/private_key.pem"
+    alg: "RS256"
+
+  federation:
+    trustAnchors: []
+
+# Environment variables
+env:
+  - name: RUST_LOG
+    value: "info"
+  # Add additional environment variables here
+  # - name: CRABIDP__SERVER__PUBLIC_BASE_URL
+  #   value: "https://idp.example.com"
+
+# Persistence for database and keys
+persistence:
+  enabled: true
+  # storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  annotations: {}
+
+# Liveness probe configuration
+livenessProbe:
+  httpGet:
+    path: /.well-known/openid-configuration
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /.well-known/openid-configuration
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3

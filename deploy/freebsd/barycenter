@@ -1,0 +1,59 @@
+#!/bin/sh
+#
+# PROVIDE: barycenter
+# REQUIRE: NETWORKING DAEMON
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable barycenter:
+#
+# barycenter_enable="YES"
+# barycenter_config="/usr/local/etc/barycenter/config.toml"  # optional
+# barycenter_user="barycenter"                               # optional
+# barycenter_group="barycenter"                              # optional
+# barycenter_env="RUST_LOG=info"                             # optional
+
+. /etc/rc.subr
+
+name="barycenter"
+rcvar=barycenter_enable
+
+load_rc_config $name
+
+: ${barycenter_enable:="NO"}
+: ${barycenter_user:="barycenter"}
+: ${barycenter_group:="barycenter"}
+: ${barycenter_config:="/usr/local/etc/barycenter/config.toml"}
+: ${barycenter_env:=""}
+
+pidfile="/var/run/${name}.pid"
+command="/usr/local/bin/barycenter"
+command_args="--config ${barycenter_config}"
+
+# Daemon management
+barycenter_start_precmd()
+{
+    # Check if binary exists
+    if [ ! -x "${command}" ]; then
+        err 1 "${command} not found or not executable"
+    fi
+
+    # Check if config exists
+    if [ ! -f "${barycenter_config}" ]; then
+        err 1 "Config file ${barycenter_config} not found"
+    fi
+
+    # Ensure data directory exists
+    if [ ! -d "/var/db/barycenter" ]; then
+        mkdir -p /var/db/barycenter
+        chown ${barycenter_user}:${barycenter_group} /var/db/barycenter
+    fi
+}
+
+start_precmd="barycenter_start_precmd"
+
+# Use daemon to run in background
+command_interpreter="/usr/sbin/daemon"
+command="/usr/sbin/daemon"
+command_args="-f -p ${pidfile} -u ${barycenter_user} ${barycenter_env:+-o ${barycenter_env}} /usr/local/bin/barycenter --config ${barycenter_config}"
+
+run_rc_command "$1"

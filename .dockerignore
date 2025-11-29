@@ -1,0 +1,45 @@
+# Git
+.git/
+.gitignore
+.github/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Rust
+target/
+Cargo.lock
+
+# Build artifacts
+*.db
+*.db-shm
+*.db-wal
+
+# Data directories
+data/
+crabidp.db
+
+# Documentation
+README.md
+CONTRIBUTING.md
+CLAUDE.md
+docs/
+
+# Tests
+tests/
+
+# CI/CD
+.github/
+
+# Config
+.config/
+.claude/
+
+# Temporary files
+tmp/
+*.tmp
+*.log

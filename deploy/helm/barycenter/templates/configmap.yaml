@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "barycenter.fullname" . }}
+  labels:
+    {{- include "barycenter.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [server]
+    host = {{ .Values.config.server.host | quote }}
+    port = {{ .Values.config.server.port }}
+    {{- if .Values.config.server.publicBaseUrl }}
+    public_base_url = {{ .Values.config.server.publicBaseUrl | quote }}
+    {{- end }}
+
+    [database]
+    url = {{ .Values.config.database.url | quote }}
+
+    [keys]
+    jwks_path = {{ .Values.config.keys.jwksPath | quote }}
+    private_key_path = {{ .Values.config.keys.privateKeyPath | quote }}
+    alg = {{ .Values.config.keys.alg | quote }}
+
+    [federation]
+    trust_anchors = {{ .Values.config.federation.trustAnchors | toJson }}

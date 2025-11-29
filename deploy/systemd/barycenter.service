@@ -1,0 +1,55 @@
+[Unit]
+Description=Barycenter OpenID Connect Identity Provider
+Documentation=https://github.com/yourusername/barycenter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=barycenter
+Group=barycenter
+
+# Paths
+WorkingDirectory=/var/lib/barycenter
+ExecStart=/usr/local/bin/barycenter --config /etc/barycenter/config.toml
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/barycenter
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=512
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=barycenter
+
+# Environment
+Environment="RUST_LOG=info"
+# Override config with environment variables:
+# Environment="CRABIDP__SERVER__PUBLIC_BASE_URL=https://idp.example.com"
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target

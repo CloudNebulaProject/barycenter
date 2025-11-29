@@ -1,0 +1,17 @@
+apiVersion: v2
+name: barycenter
+description: OpenID Connect Identity Provider with federation and auto-registration
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - openid
+  - oauth2
+  - identity
+  - authentication
+  - idp
+home: https://github.com/yourusername/barycenter
+sources:
+  - https://github.com/yourusername/barycenter
+maintainers:
+  - name: Barycenter Team
