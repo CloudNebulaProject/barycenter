@@ -191,3 +191,4 @@ Example PKCE generation (bash):
 verifier=$(openssl rand -base64 32 | tr -d '=' | tr '+/' '-_')
 challenge=$(echo -n "$verifier" | openssl dgst -binary -sha256 | base64 | tr -d '=' | tr '+/' '-_')
 ```
+- I have github team plan
