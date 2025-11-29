@@ -15,11 +15,12 @@ impl TestServer {
         let port = 8080;
         let base_url = format!("http://0.0.0.0:{}", port);
 
-        let process = Command::new("cargo")
+        // Use piped stderr so we can capture errors if server fails to start
+        let mut process = Command::new("cargo")
             .args(["run", "--release", "--"])
             .env("RUST_LOG", "error")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("Failed to start server");
 
@@ -30,15 +31,26 @@ impl TestServer {
         let client = reqwest::blocking::Client::new();
         let max_retries = 30;
         for i in 0..max_retries {
-            if let Ok(_) = client
+            if client
                 .get(format!("{}/.well-known/openid-configuration", base_url))
                 .send()
+                .is_ok()
             {
                 println!("Server started successfully");
                 return Self { process, base_url };
             }
             if i < max_retries - 1 {
                 thread::sleep(Duration::from_secs(1));
+            }
+        }
+
+        // Server failed to start - try to get stderr output
+        use std::io::Read;
+        if let Some(mut stderr) = process.stderr.take() {
+            let mut error_output = String::new();
+            let _ = stderr.read_to_string(&mut error_output);
+            if !error_output.is_empty() {
+                eprintln!("Server stderr output:\n{}", error_output);
             }
         }
 
