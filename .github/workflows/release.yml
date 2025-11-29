@@ -70,19 +70,13 @@ jobs:
             VERSION=${{ github.ref_name }}
             REVISION=${{ github.sha }}
 
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-
   create-manifest:
     runs-on: ubuntu-latest
     needs: build-platform
     permissions:
       contents: read
       packages: write
+      id-token: write
 
     steps:
       - name: Log in to GitHub Container Registry
@@ -104,6 +98,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Create and push multi-platform manifest
+        id: manifest
         run: |
           # Extract tags into an array
           TAGS=$(echo '${{ steps.meta.outputs.tags }}' | tr '\n' ' ')
@@ -115,6 +110,18 @@ jobs:
               ${TAG}-amd64 \
               ${TAG}-arm64
           done
+
+          # Get the digest of the first tag (version tag) for attestation
+          FIRST_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
+          DIGEST=$(docker buildx imagetools inspect ${FIRST_TAG} --format '{{.Manifest.Digest}}')
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
 
   create-github-release:
     runs-on: ubuntu-latest
