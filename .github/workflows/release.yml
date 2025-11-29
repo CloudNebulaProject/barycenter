@@ -40,7 +40,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
             type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') }}
-            type=sha,prefix={{branch}}-
+            type=sha,prefix=sha-
           labels: |
             org.opencontainers.image.title=Barycenter
             org.opencontainers.image.description=OpenID Connect Identity Provider with federation and auto-registration
