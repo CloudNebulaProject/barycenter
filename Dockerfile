@@ -10,9 +10,10 @@ COPY Cargo.toml Cargo.lock ./
 # Copy source code
 COPY src ./src
 
-# Build release binary
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
+# Build release binary with platform-specific caches to avoid race conditions
+ARG TARGETPLATFORM
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETPLATFORM} \
+    --mount=type=cache,target=/build/target,id=build-target-${TARGETPLATFORM} \
     cargo build --release && \
     cp target/release/barycenter /barycenter
 
