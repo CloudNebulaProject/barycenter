@@ -113,7 +113,7 @@ jobs:
 
           # Get the digest of the first tag (version tag) for attestation
           FIRST_TAG=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
-          DIGEST=$(docker buildx imagetools inspect ${FIRST_TAG} --format '{{.Manifest.Digest}}')
+          DIGEST=$(docker buildx imagetools inspect ${FIRST_TAG} --raw | sha256sum | cut -d' ' -f1 | awk '{print "sha256:" $0}')
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
       - name: Generate artifact attestation
