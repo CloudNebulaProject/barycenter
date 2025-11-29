@@ -1,8 +1,8 @@
 use crate::errors::CrabError;
 use crate::settings::Database as DbCfg;
+use base64ct::Encoding;
 use chrono::Utc;
 use rand::RngCore;
-use base64ct::Encoding;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -86,8 +86,11 @@ pub struct RefreshToken {
 pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
     let db = Database::connect(&cfg.url).await?;
     // bootstrap schema
-    db.execute(Statement::from_string(DbBackend::Sqlite, "PRAGMA foreign_keys = ON"))
-        .await?;
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "PRAGMA foreign_keys = ON",
+    ))
+    .await?;
 
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
@@ -99,7 +102,7 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             redirect_uris TEXT NOT NULL,
             created_at INTEGER NOT NULL
         )
-        "#
+        "#,
     ))
     .await?;
 
@@ -113,7 +116,7 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             updated_at INTEGER NOT NULL,
             PRIMARY KEY(owner, key)
         )
-        "#
+        "#,
     ))
     .await?;
 
@@ -134,7 +137,7 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             consumed INTEGER NOT NULL DEFAULT 0,
             auth_time INTEGER
         )
-        "#
+        "#,
     ))
     .await?;
 
@@ -150,7 +153,7 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             expires_at INTEGER NOT NULL,
             revoked INTEGER NOT NULL DEFAULT 0
         )
-        "#
+        "#,
     ))
     .await?;
 
@@ -166,7 +169,7 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             created_at INTEGER NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1
         )
-        "#
+        "#,
     ))
     .await?;
 
@@ -182,13 +185,13 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             user_agent TEXT,
             ip_address TEXT
         )
-        "#
+        "#,
     ))
     .await?;
 
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
-        "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)"
+        "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)",
     ))
     .await?;
 
@@ -205,13 +208,13 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             revoked INTEGER NOT NULL DEFAULT 0,
             parent_token TEXT
         )
-        "#
+        "#,
     ))
     .await?;
 
     db.execute(Statement::from_string(
         DbBackend::Sqlite,
-        "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at)"
+        "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at)",
     ))
     .await?;
 
@@ -287,7 +290,10 @@ pub async fn set_property(
     Ok(())
 }
 
-pub async fn get_client(db: &DatabaseConnection, client_id: &str) -> Result<Option<Client>, CrabError> {
+pub async fn get_client(
+    db: &DatabaseConnection,
+    client_id: &str,
+) -> Result<Option<Client>, CrabError> {
     if let Some(row) = db
         .query_one(Statement::from_sql_and_values(
             DbBackend::Sqlite,
@@ -420,10 +426,21 @@ pub async fn issue_access_token(
         [token.clone().into(), client_id.into(), subject.into(), scope.into(), now.into(), expires_at.into()],
     ))
     .await?;
-    Ok(AccessToken { token, client_id: client_id.to_string(), subject: subject.to_string(), scope: scope.to_string(), created_at: now, expires_at, revoked: 0 })
+    Ok(AccessToken {
+        token,
+        client_id: client_id.to_string(),
+        subject: subject.to_string(),
+        scope: scope.to_string(),
+        created_at: now,
+        expires_at,
+        revoked: 0,
+    })
 }
 
-pub async fn get_access_token(db: &DatabaseConnection, token: &str) -> Result<Option<AccessToken>, CrabError> {
+pub async fn get_access_token(
+    db: &DatabaseConnection,
+    token: &str,
+) -> Result<Option<AccessToken>, CrabError> {
     if let Some(row) = db
         .query_one(Statement::from_sql_and_values(
             DbBackend::Sqlite,
@@ -461,8 +478,8 @@ pub async fn create_user(
     password: &str,
     email: Option<String>,
 ) -> Result<User, CrabError> {
+    use argon2::password_hash::{rand_core::OsRng, SaltString};
     use argon2::{Argon2, PasswordHasher};
-    use argon2::password_hash::{SaltString, rand_core::OsRng};
 
     let subject = random_id();
     let created_at = Utc::now().timestamp();
@@ -540,7 +557,7 @@ pub async fn verify_user_password(
     username: &str,
     password: &str,
 ) -> Result<Option<String>, CrabError> {
-    use argon2::{Argon2, PasswordVerifier, PasswordHash};
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
 
     let user = match get_user_by_username(db, username).await? {
         Some(u) if u.enabled == 1 => u,
@@ -641,10 +658,7 @@ pub async fn get_session(
     }
 }
 
-pub async fn delete_session(
-    db: &DatabaseConnection,
-    session_id: &str,
-) -> Result<(), CrabError> {
+pub async fn delete_session(db: &DatabaseConnection, session_id: &str) -> Result<(), CrabError> {
     db.execute(Statement::from_sql_and_values(
         DbBackend::Sqlite,
         "DELETE FROM sessions WHERE session_id = ?",
@@ -752,10 +766,7 @@ pub async fn get_refresh_token(
     }
 }
 
-pub async fn revoke_refresh_token(
-    db: &DatabaseConnection,
-    token: &str,
-) -> Result<(), CrabError> {
+pub async fn revoke_refresh_token(db: &DatabaseConnection, token: &str) -> Result<(), CrabError> {
     db.execute(Statement::from_sql_and_values(
         DbBackend::Sqlite,
         "UPDATE refresh_tokens SET revoked = 1 WHERE token = ?",
@@ -777,7 +788,15 @@ pub async fn rotate_refresh_token(
     revoke_refresh_token(db, old_token).await?;
 
     // Issue a new token with the old token as parent
-    issue_refresh_token(db, client_id, subject, scope, ttl_secs, Some(old_token.to_string())).await
+    issue_refresh_token(
+        db,
+        client_id,
+        subject,
+        scope,
+        ttl_secs,
+        Some(old_token.to_string()),
+    )
+    .await
 }
 
 pub async fn cleanup_expired_refresh_tokens(db: &DatabaseConnection) -> Result<u64, CrabError> {

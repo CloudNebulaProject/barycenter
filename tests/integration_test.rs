@@ -1,8 +1,8 @@
+use base64ct::Encoding;
+use sha2::Digest;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::Duration;
-use base64ct::Encoding;
-use sha2::Digest;
 
 /// Helper to start the barycenter server for integration tests
 struct TestServer {
@@ -86,7 +86,14 @@ fn register_client(base_url: &str) -> (String, String, String) {
 }
 
 /// Perform login and return an HTTP client with session cookie
-fn login_and_get_client(base_url: &str, username: &str, password: &str) -> (reqwest::blocking::Client, std::sync::Arc<reqwest::cookie::Jar>) {
+fn login_and_get_client(
+    base_url: &str,
+    username: &str,
+    password: &str,
+) -> (
+    reqwest::blocking::Client,
+    std::sync::Arc<reqwest::cookie::Jar>,
+) {
     let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
     let client = reqwest::blocking::ClientBuilder::new()
         .cookie_provider(jar.clone())
@@ -108,10 +115,7 @@ fn login_and_get_client(base_url: &str, username: &str, password: &str) -> (reqw
     // Then login to create a session
     let _login_response = client
         .post(format!("{}/login", base_url))
-        .form(&[
-            ("username", username),
-            ("password", password),
-        ])
+        .form(&[("username", username), ("password", password)])
         .send()
         .expect("Failed to login");
 
@@ -122,16 +126,16 @@ fn login_and_get_client(base_url: &str, username: &str, password: &str) -> (reqw
 fn test_openidconnect_authorization_code_flow() {
     use openidconnect::{
         core::{CoreClient, CoreProviderMetadata},
-        AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl,
-        Nonce, OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
+        AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
+        OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
     };
 
     let server = TestServer::start();
     let (client_id, client_secret, redirect_uri) = register_client(server.base_url());
-    let (authenticated_client, _jar) = login_and_get_client(server.base_url(), "testuser", "testpass123");
+    let (authenticated_client, _jar) =
+        login_and_get_client(server.base_url(), "testuser", "testpass123");
 
-    let issuer_url = IssuerUrl::new(server.base_url().to_string())
-        .expect("Invalid issuer URL");
+    let issuer_url = IssuerUrl::new(server.base_url().to_string()).expect("Invalid issuer URL");
 
     let http_client = reqwest::blocking::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
@@ -155,7 +159,7 @@ fn test_openidconnect_authorization_code_flow() {
         .authorize_url(
             CoreAuthenticationFlow::AuthorizationCode,
             CsrfToken::new_random,
-            Nonce::new_random
+            Nonce::new_random,
         )
         .add_scope(Scope::new("openid".to_string()))
         .add_scope(Scope::new("profile".to_string()))
@@ -186,7 +190,9 @@ fn test_openidconnect_authorization_code_flow() {
         url::Url::parse(location).expect("Invalid redirect URL")
     } else {
         let base_url_for_redirect = url::Url::parse(&redirect_uri).expect("Invalid redirect URI");
-        base_url_for_redirect.join(location).expect("Invalid redirect URL")
+        base_url_for_redirect
+            .join(location)
+            .expect("Invalid redirect URL")
     };
     let code = redirect_url_parsed
         .query_pairs()
@@ -228,8 +234,8 @@ fn test_openidconnect_authorization_code_flow() {
 
     let payload = base64ct::Base64UrlUnpadded::decode_vec(parts[1])
         .expect("Failed to decode ID token payload");
-    let claims: serde_json::Value = serde_json::from_slice(&payload)
-        .expect("Failed to parse ID token claims");
+    let claims: serde_json::Value =
+        serde_json::from_slice(&payload).expect("Failed to parse ID token claims");
 
     // Verify required claims
     assert!(claims["sub"].is_string());
@@ -246,13 +252,14 @@ fn test_openidconnect_authorization_code_flow() {
 #[test]
 fn test_oauth2_authorization_code_flow() {
     use oauth2::{
-        basic::BasicClient, AuthUrl, AuthorizationCode, ClientId,
-        ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse, TokenUrl,
+        basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+        PkceCodeChallenge, RedirectUrl, Scope, TokenResponse, TokenUrl,
     };
 
     let server = TestServer::start();
     let (client_id, client_secret, redirect_uri) = register_client(server.base_url());
-    let (authenticated_client, _jar) = login_and_get_client(server.base_url(), "testuser2", "testpass123");
+    let (authenticated_client, _jar) =
+        login_and_get_client(server.base_url(), "testuser2", "testpass123");
 
     let http_client_blocking = reqwest::blocking::Client::new();
     let discovery_response = http_client_blocking
@@ -320,7 +327,9 @@ fn test_oauth2_authorization_code_flow() {
         url::Url::parse(location).expect("Invalid redirect URL")
     } else {
         let base_url_for_redirect = url::Url::parse(&redirect_uri).expect("Invalid redirect URI");
-        base_url_for_redirect.join(location).expect("Invalid redirect URL")
+        base_url_for_redirect
+            .join(location)
+            .expect("Invalid redirect URL")
     };
     let code = redirect_url_parsed
         .query_pairs()
@@ -370,14 +379,14 @@ fn test_security_headers() {
 
     let client = reqwest::blocking::Client::new();
     let response = client
-        .get(format!("{}/.well-known/openid-configuration", server.base_url()))
+        .get(format!(
+            "{}/.well-known/openid-configuration",
+            server.base_url()
+        ))
         .send()
         .expect("Failed to fetch discovery");
 
-    assert_eq!(
-        response.headers().get("x-frame-options").unwrap(),
-        "DENY"
-    );
+    assert_eq!(response.headers().get("x-frame-options").unwrap(), "DENY");
     assert_eq!(
         response.headers().get("x-content-type-options").unwrap(),
         "nosniff"
@@ -397,7 +406,8 @@ fn test_security_headers() {
 fn test_token_endpoint_cache_control() {
     let server = TestServer::start();
     let (client_id, client_secret, redirect_uri) = register_client(server.base_url());
-    let (authenticated_client, _jar) = login_and_get_client(server.base_url(), "testuser3", "testpass123");
+    let (authenticated_client, _jar) =
+        login_and_get_client(server.base_url(), "testuser3", "testpass123");
 
     let http_client = reqwest::blocking::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
@@ -405,7 +415,10 @@ fn test_token_endpoint_cache_control() {
         .expect("Failed to build HTTP client");
 
     let discovery_response = http_client
-        .get(format!("{}/.well-known/openid-configuration", server.base_url()))
+        .get(format!(
+            "{}/.well-known/openid-configuration",
+            server.base_url()
+        ))
         .send()
         .expect("Failed to fetch discovery")
         .json::<serde_json::Value>()
@@ -445,7 +458,9 @@ fn test_token_endpoint_cache_control() {
         url::Url::parse(location).expect("Invalid redirect URL")
     } else {
         let base_url_for_redirect = url::Url::parse(&redirect_uri).expect("Invalid redirect URI");
-        base_url_for_redirect.join(location).expect("Invalid redirect URL")
+        base_url_for_redirect
+            .join(location)
+            .expect("Invalid redirect URL")
     };
     let code = redirect_url_parsed
         .query_pairs()
@@ -453,9 +468,8 @@ fn test_token_endpoint_cache_control() {
         .map(|(_, v)| v.to_string())
         .expect("No code in redirect");
 
-    let auth_header = base64ct::Base64::encode_string(
-        format!("{}:{}", client_id, client_secret).as_bytes()
-    );
+    let auth_header =
+        base64ct::Base64::encode_string(format!("{}:{}", client_id, client_secret).as_bytes());
 
     let token_response = http_client
         .post(format!("{}/token", server.base_url()))

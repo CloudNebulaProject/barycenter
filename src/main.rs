@@ -1,9 +1,9 @@
-mod settings;
 mod errors;
 mod jwks;
-mod web;
-mod storage;
 mod session;
+mod settings;
+mod storage;
+mod web;
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
@@ -45,7 +45,11 @@ async fn main() -> Result<()> {
 
 async fn ensure_test_users(db: &sea_orm::DatabaseConnection) -> Result<()> {
     // Check if admin exists
-    if storage::get_user_by_username(db, "admin").await.into_diagnostic()?.is_none() {
+    if storage::get_user_by_username(db, "admin")
+        .await
+        .into_diagnostic()?
+        .is_none()
+    {
         storage::create_user(
             db,
             "admin",

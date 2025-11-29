@@ -19,7 +19,10 @@ impl SessionCookie {
         // Parse cookie header for our session cookie
         for cookie in cookie_header.split(';') {
             let cookie = cookie.trim();
-            if let Some(value) = cookie.strip_prefix(SESSION_COOKIE_NAME).and_then(|s| s.strip_prefix('=')) {
+            if let Some(value) = cookie
+                .strip_prefix(SESSION_COOKIE_NAME)
+                .and_then(|s| s.strip_prefix('='))
+            {
                 return Some(Self {
                     session_id: value.to_string(),
                 });

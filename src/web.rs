@@ -3,27 +3,27 @@
 //! This module exposes the HTTP endpoints, some of which are discovery and JWKS
 //! as required by OpenID Connect. Authorization, token, and userinfo will follow
 //! per the conformance plan.
-use crate::jwks::JwksManager;
 use crate::errors::CrabError;
+use crate::jwks::JwksManager;
+use crate::session::SessionCookie;
 use crate::settings::Settings;
 use crate::storage;
-use crate::session::SessionCookie;
-use axum::extract::{Path, State, Query, Form};
-use axum::http::{StatusCode, HeaderMap, HeaderName, HeaderValue, Request};
-use axum::response::{IntoResponse, Html, Redirect};
+use axum::body::Body;
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::Response;
+use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use axum::middleware::{self, Next};
-use axum::body::Body;
+use base64ct::{Base64, Base64UrlUnpadded, Encoding};
 use miette::IntoDiagnostic;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use sha2::{Digest, Sha256};
-use base64ct::{Base64UrlUnpadded, Encoding, Base64};
-use axum::response::Response;
 use std::time::SystemTime;
 
 #[derive(Clone)]
@@ -77,8 +77,16 @@ async fn security_headers(request: Request<Body>, next: Next) -> impl IntoRespon
     response
 }
 
-pub async fn serve(settings: Settings, db: DatabaseConnection, jwks: JwksManager) -> miette::Result<()> {
-    let state = AppState { settings: Arc::new(settings), db, jwks };
+pub async fn serve(
+    settings: Settings,
+    db: DatabaseConnection,
+    jwks: JwksManager,
+) -> miette::Result<()> {
+    let state = AppState {
+        settings: Arc::new(settings),
+        db,
+        jwks,
+    };
 
     // NOTE: Rate limiting should be implemented at the reverse proxy level (nginx, traefik, etc.)
     // for production deployments. This is more efficient and flexible than application-level
@@ -102,12 +110,17 @@ pub async fn serve(settings: Settings, db: DatabaseConnection, jwks: JwksManager
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
 
-    let addr: SocketAddr = format!("{}:{}", state.settings.server.host, state.settings.server.port)
-        .parse()
-        .map_err(|e| miette::miette!("bad listen addr: {e}"))?;
+    let addr: SocketAddr = format!(
+        "{}:{}",
+        state.settings.server.host, state.settings.server.port
+    )
+    .parse()
+    .map_err(|e| miette::miette!("bad listen addr: {e}"))?;
     tracing::info!(%addr, "listening");
     tracing::warn!("Rate limiting should be configured at the reverse proxy level for production");
-    let listener = tokio::net::TcpListener::bind(addr).await.into_diagnostic()?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .into_diagnostic()?;
     axum::serve(listener, router).await.into_diagnostic()?;
     Ok(())
 }
@@ -166,17 +179,34 @@ struct AuthorizeQuery {
 
 fn url_append_query(mut base: String, params: &[(&str, String)]) -> String {
     let qs = serde_urlencoded::to_string(
-        params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Vec<(String, String)>>(),
-    ).unwrap_or_default();
-    if base.contains('?') { base.push('&'); } else { base.push('?'); }
+        params
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect::<Vec<(String, String)>>(),
+    )
+    .unwrap_or_default();
+    if base.contains('?') {
+        base.push('&');
+    } else {
+        base.push('?');
+    }
     base.push_str(&qs);
     base
 }
 
-fn oauth_error_redirect(redirect_uri: &str, state: Option<&str>, error: &str, desc: &str) -> axum::response::Redirect {
+fn oauth_error_redirect(
+    redirect_uri: &str,
+    state: Option<&str>,
+    error: &str,
+    desc: &str,
+) -> axum::response::Redirect {
     let mut params = vec![("error", error.to_string())];
-    if !desc.is_empty() { params.push(("error_description", desc.to_string())); }
-    if let Some(s) = state { params.push(("state", s.to_string())); }
+    if !desc.is_empty() {
+        params.push(("error_description", desc.to_string()));
+    }
+    if let Some(s) = state {
+        params.push(("state", s.to_string()));
+    }
     let loc = url_append_query(redirect_uri.to_string(), &params);
     axum::response::Redirect::temporary(&loc)
 }
@@ -186,42 +216,91 @@ fn oauth_error_redirect(redirect_uri: &str, state: Option<&str>, error: &str, de
 // consent_required: Consent is required but prompt=none was specified
 // interaction_required: User interaction is required but prompt=none was specified
 // account_selection_required: Account selection is required but prompt=none was specified
-fn oidc_error_redirect(redirect_uri: &str, state: Option<&str>, error: &str) -> axum::response::Redirect {
+fn oidc_error_redirect(
+    redirect_uri: &str,
+    state: Option<&str>,
+    error: &str,
+) -> axum::response::Redirect {
     oauth_error_redirect(redirect_uri, state, error, "")
 }
 
-async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<AuthorizeQuery>) -> impl IntoResponse {
+async fn authorize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AuthorizeQuery>,
+) -> impl IntoResponse {
     // Validate response_type - support code, id_token, and id_token token
     let valid_response_types = ["code", "id_token", "id_token token"];
     if !valid_response_types.contains(&q.response_type.as_str()) {
-        return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "unsupported_response_type",
-            "only response_type=code, id_token, or 'id_token token' supported").into_response();
+        return oauth_error_redirect(
+            &q.redirect_uri,
+            q.state.as_deref(),
+            "unsupported_response_type",
+            "only response_type=code, id_token, or 'id_token token' supported",
+        )
+        .into_response();
     }
     // Validate scope includes openid
     if !q.scope.split_whitespace().any(|s| s == "openid") {
-        return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "invalid_scope", "scope must include openid").into_response();
+        return oauth_error_redirect(
+            &q.redirect_uri,
+            q.state.as_deref(),
+            "invalid_scope",
+            "scope must include openid",
+        )
+        .into_response();
     }
     // Require PKCE S256
     let (code_challenge, ccm) = match (&q.code_challenge, &q.code_challenge_method) {
         (Some(cc), Some(m)) if m == "S256" => (cc.clone(), m.clone()),
         _ => {
-            return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "invalid_request", "PKCE (S256) required").into_response();
+            return oauth_error_redirect(
+                &q.redirect_uri,
+                q.state.as_deref(),
+                "invalid_request",
+                "PKCE (S256) required",
+            )
+            .into_response();
         }
     };
 
     // Lookup client
     let client = match storage::get_client(&state.db, &q.client_id).await {
         Ok(Some(c)) => c,
-        Ok(None) => return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "unauthorized_client", "unknown client_id").into_response(),
-        Err(_) => return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "server_error", "db error").into_response(),
+        Ok(None) => {
+            return oauth_error_redirect(
+                &q.redirect_uri,
+                q.state.as_deref(),
+                "unauthorized_client",
+                "unknown client_id",
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return oauth_error_redirect(
+                &q.redirect_uri,
+                q.state.as_deref(),
+                "server_error",
+                "db error",
+            )
+            .into_response()
+        }
     };
     // Validate redirect_uri exact match
     if !client.redirect_uris.iter().any(|u| u == &q.redirect_uri) {
-        return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "invalid_request", "redirect_uri mismatch").into_response();
+        return oauth_error_redirect(
+            &q.redirect_uri,
+            q.state.as_deref(),
+            "invalid_request",
+            "redirect_uri mismatch",
+        )
+        .into_response();
     }
 
     // Parse prompt parameter (can be space-separated list)
-    let prompt_values: Vec<&str> = q.prompt.as_ref()
+    let prompt_values: Vec<&str> = q
+        .prompt
+        .as_ref()
         .map(|p| p.split_whitespace().collect())
         .unwrap_or_default();
 
@@ -233,7 +312,10 @@ async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): 
     let session_opt = if has_prompt_login || has_prompt_select_account {
         None // Force re-authentication
     } else if let Some(cookie) = SessionCookie::from_headers(&headers) {
-        storage::get_session(&state.db, &cookie.session_id).await.ok().flatten()
+        storage::get_session(&state.db, &cookie.session_id)
+            .await
+            .ok()
+            .flatten()
     } else {
         None
     };
@@ -262,7 +344,8 @@ async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): 
             // No valid session or session too old
             // If prompt=none, return error instead of redirecting
             if has_prompt_none {
-                return oidc_error_redirect(&q.redirect_uri, q.state.as_deref(), "login_required").into_response();
+                return oidc_error_redirect(&q.redirect_uri, q.state.as_deref(), "login_required")
+                    .into_response();
             }
 
             // Build return_to URL with all parameters
@@ -299,8 +382,13 @@ async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): 
                 return_params.push(("acr_values", acr.clone()));
             }
 
-            let return_to = url_append_query("/authorize".to_string(),
-                &return_params.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>());
+            let return_to = url_append_query(
+                "/authorize".to_string(),
+                &return_params
+                    .iter()
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect::<Vec<_>>(),
+            );
             let login_url = format!("/login?return_to={}", urlencoded(&return_to));
             return Redirect::temporary(&login_url).into_response();
         }
@@ -314,51 +402,120 @@ async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): 
         "code" => {
             // Authorization Code Flow - issue auth code
             let ttl = 300; // 5 minutes
-            match storage::issue_auth_code(&state.db, &q.client_id, &q.redirect_uri, &scope, &subject, nonce, &code_challenge, &ccm, ttl, auth_time).await {
+            match storage::issue_auth_code(
+                &state.db,
+                &q.client_id,
+                &q.redirect_uri,
+                &scope,
+                &subject,
+                nonce,
+                &code_challenge,
+                &ccm,
+                ttl,
+                auth_time,
+            )
+            .await
+            {
                 Ok(code) => {
                     let mut params = vec![("code", code.code.clone())];
-                    if let Some(s) = &q.state { params.push(("state", s.clone())); }
+                    if let Some(s) = &q.state {
+                        params.push(("state", s.clone()));
+                    }
                     let loc = url_append_query(q.redirect_uri.clone(), &params);
                     axum::response::Redirect::temporary(&loc).into_response()
                 }
-                Err(_) => oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "server_error", "could not issue code").into_response(),
+                Err(_) => oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "server_error",
+                    "could not issue code",
+                )
+                .into_response(),
             }
         }
         "id_token" => {
             // Implicit Flow - return ID token in fragment
             // Require nonce for implicit flow (OIDC Core 1.0 Section 3.2.2.1)
             if nonce.is_none() {
-                return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "invalid_request", "nonce required for implicit flow").into_response();
+                return oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "invalid_request",
+                    "nonce required for implicit flow",
+                )
+                .into_response();
             }
 
-            match build_id_token(&state, &q.client_id, &subject, nonce.as_deref(), auth_time, None).await {
+            match build_id_token(
+                &state,
+                &q.client_id,
+                &subject,
+                nonce.as_deref(),
+                auth_time,
+                None,
+            )
+            .await
+            {
                 Ok(id_token) => {
                     let mut fragment_params = vec![("id_token", id_token)];
                     if let Some(s) = &q.state {
                         fragment_params.push(("state", s.clone()));
                     }
-                    let fragment = serde_urlencoded::to_string(&fragment_params).unwrap_or_default();
+                    let fragment =
+                        serde_urlencoded::to_string(&fragment_params).unwrap_or_default();
                     let loc = format!("{}#{}", q.redirect_uri, fragment);
                     axum::response::Redirect::temporary(&loc).into_response()
                 }
-                Err(_) => oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "server_error", "could not generate id_token").into_response(),
+                Err(_) => oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "server_error",
+                    "could not generate id_token",
+                )
+                .into_response(),
             }
         }
         "id_token token" => {
             // Implicit Flow - return both ID token and access token in fragment
             // Require nonce for implicit flow
             if nonce.is_none() {
-                return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "invalid_request", "nonce required for implicit flow").into_response();
+                return oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "invalid_request",
+                    "nonce required for implicit flow",
+                )
+                .into_response();
             }
 
             // Issue access token
-            let access = match storage::issue_access_token(&state.db, &q.client_id, &subject, &scope, 3600).await {
-                Ok(t) => t,
-                Err(_) => return oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "server_error", "could not issue access token").into_response(),
-            };
+            let access =
+                match storage::issue_access_token(&state.db, &q.client_id, &subject, &scope, 3600)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(_) => {
+                        return oauth_error_redirect(
+                            &q.redirect_uri,
+                            q.state.as_deref(),
+                            "server_error",
+                            "could not issue access token",
+                        )
+                        .into_response()
+                    }
+                };
 
             // Build ID token with at_hash
-            match build_id_token(&state, &q.client_id, &subject, nonce.as_deref(), auth_time, Some(&access.token)).await {
+            match build_id_token(
+                &state,
+                &q.client_id,
+                &subject,
+                nonce.as_deref(),
+                auth_time,
+                Some(&access.token),
+            )
+            .await
+            {
                 Ok(id_token) => {
                     let mut fragment_params = vec![
                         ("access_token", access.token),
@@ -369,14 +526,27 @@ async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): 
                     if let Some(s) = &q.state {
                         fragment_params.push(("state", s.clone()));
                     }
-                    let fragment = serde_urlencoded::to_string(&fragment_params).unwrap_or_default();
+                    let fragment =
+                        serde_urlencoded::to_string(&fragment_params).unwrap_or_default();
                     let loc = format!("{}#{}", q.redirect_uri, fragment);
                     axum::response::Redirect::temporary(&loc).into_response()
                 }
-                Err(_) => oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "server_error", "could not generate id_token").into_response(),
+                Err(_) => oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "server_error",
+                    "could not generate id_token",
+                )
+                .into_response(),
             }
         }
-        _ => oauth_error_redirect(&q.redirect_uri, q.state.as_deref(), "unsupported_response_type", "invalid response_type").into_response(),
+        _ => oauth_error_redirect(
+            &q.redirect_uri,
+            q.state.as_deref(),
+            "unsupported_response_type",
+            "invalid response_type",
+        )
+        .into_response(),
     }
 }
 
@@ -417,7 +587,10 @@ async fn build_id_token(
         let _ = payload.set_claim("at_hash", Some(serde_json::Value::String(at_hash)));
     }
 
-    state.jwks.sign_jwt_rs256(&payload).map_err(|e| CrabError::Other(e.to_string()))
+    state
+        .jwks
+        .sign_jwt_rs256(&payload)
+        .map_err(|e| CrabError::Other(e.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,23 +625,38 @@ fn json_with_headers(status: StatusCode, value: Value, headers: &[(&str, String)
     let mut resp = (status, Json(value)).into_response();
     let h = resp.headers_mut();
     for (name, val) in headers {
-        if let (Ok(n), Ok(v)) = (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(val)) {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(val),
+        ) {
             h.insert(n, v);
         }
     }
     resp
 }
 
-async fn token(State(state): State<AppState>, headers: HeaderMap, Form(req): Form<TokenRequest>) -> impl IntoResponse {
+async fn token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(req): Form<TokenRequest>,
+) -> impl IntoResponse {
     // Validate grant_type
     match req.grant_type.as_str() {
         "authorization_code" => handle_authorization_code_grant(state, headers, req).await,
         "refresh_token" => handle_refresh_token_grant(state, headers, req).await,
-        _ => (StatusCode::BAD_REQUEST, Json(json!({"error":"unsupported_grant_type"}))).into_response(),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"unsupported_grant_type"})),
+        )
+            .into_response(),
     }
 }
 
-async fn handle_authorization_code_grant(state: AppState, headers: HeaderMap, req: TokenRequest) -> Response {
+async fn handle_authorization_code_grant(
+    state: AppState,
+    headers: HeaderMap,
+    req: TokenRequest,
+) -> Response {
     // Client authentication: client_secret_basic preferred, then client_secret_post
     let (client_id, client_secret) = match authenticate_client(&headers, &req) {
         Ok(pair) => pair,
@@ -481,7 +669,10 @@ async fn handle_authorization_code_grant(state: AppState, headers: HeaderMap, re
             return json_with_headers(
                 StatusCode::UNAUTHORIZED,
                 json!({"error":"invalid_client"}),
-                &[("www-authenticate", "Basic realm=\"token\", error=\"invalid_client\"".to_string())],
+                &[(
+                    "www-authenticate",
+                    "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                )],
             )
         }
     };
@@ -489,52 +680,124 @@ async fn handle_authorization_code_grant(state: AppState, headers: HeaderMap, re
         return json_with_headers(
             StatusCode::UNAUTHORIZED,
             json!({"error":"invalid_client"}),
-            &[("www-authenticate", "Basic realm=\"token\", error=\"invalid_client\"".to_string())],
+            &[(
+                "www-authenticate",
+                "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+            )],
         );
     }
 
     // Require code
     let code = match req.code {
         Some(c) => c,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_request","error_description":"code required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_request","error_description":"code required"})),
+            )
+                .into_response()
+        }
     };
 
     // Consume code
     let code_row = match storage::consume_auth_code(&state.db, &code).await {
         Ok(Some(c)) => c,
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant"}))).into_response(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_grant"})),
+            )
+                .into_response()
+        }
     };
 
     // Validate code binding
     let redirect_uri = req.redirect_uri.unwrap_or_default();
     if code_row.client_id != client_id || code_row.redirect_uri != redirect_uri {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_grant"})),
+        )
+            .into_response();
     }
 
     // Validate PKCE S256
-    let verifier = match &req.code_verifier {
-        Some(v) => v,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_request","error_description":"code_verifier required"}))).into_response(),
-    };
+    let verifier =
+        match &req.code_verifier {
+            Some(v) => v,
+            None => return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    json!({"error":"invalid_request","error_description":"code_verifier required"}),
+                ),
+            )
+                .into_response(),
+        };
     if code_row.code_challenge_method != "S256" || pkce_s256(verifier) != code_row.code_challenge {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant","error_description":"pkce verification failed"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_grant","error_description":"pkce verification failed"})),
+        )
+            .into_response();
     }
 
     // Issue access token
-    let access = match storage::issue_access_token(&state.db, &client_id, &code_row.subject, &code_row.scope, 3600).await {
+    let access = match storage::issue_access_token(
+        &state.db,
+        &client_id,
+        &code_row.subject,
+        &code_row.scope,
+        3600,
+    )
+    .await
+    {
         Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"server_error","details":e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"server_error","details":e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
     // Build ID Token using helper function
-    let id_token = match build_id_token(&state, &client_id, &code_row.subject, code_row.nonce.as_deref(), code_row.auth_time, Some(&access.token)).await {
+    let id_token = match build_id_token(
+        &state,
+        &client_id,
+        &code_row.subject,
+        code_row.nonce.as_deref(),
+        code_row.auth_time,
+        Some(&access.token),
+    )
+    .await
+    {
         Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"server_error","details":e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"server_error","details":e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
     // Issue refresh token if offline_access scope was requested
-    let refresh_token = if code_row.scope.split_whitespace().any(|s| s == "offline_access") {
-        match storage::issue_refresh_token(&state.db, &client_id, &code_row.subject, &code_row.scope, 2592000, None).await {
+    let refresh_token = if code_row
+        .scope
+        .split_whitespace()
+        .any(|s| s == "offline_access")
+    {
+        match storage::issue_refresh_token(
+            &state.db,
+            &client_id,
+            &code_row.subject,
+            &code_row.scope,
+            2592000,
+            None,
+        )
+        .await
+        {
             Ok(rt) => Some(rt.token),
             Err(_) => None, // Don't fail the whole request if refresh token issuance fails
         }
@@ -561,7 +824,11 @@ async fn handle_authorization_code_grant(state: AppState, headers: HeaderMap, re
     )
 }
 
-async fn handle_refresh_token_grant(state: AppState, headers: HeaderMap, req: TokenRequest) -> Response {
+async fn handle_refresh_token_grant(
+    state: AppState,
+    headers: HeaderMap,
+    req: TokenRequest,
+) -> Response {
     // Client authentication
     let (client_id, client_secret) = match authenticate_client(&headers, &req) {
         Ok(pair) => pair,
@@ -574,7 +841,10 @@ async fn handle_refresh_token_grant(state: AppState, headers: HeaderMap, req: To
             return json_with_headers(
                 StatusCode::UNAUTHORIZED,
                 json!({"error":"invalid_client"}),
-                &[("www-authenticate", "Basic realm=\"token\", error=\"invalid_client\"".to_string())],
+                &[(
+                    "www-authenticate",
+                    "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                )],
             )
         }
     };
@@ -582,41 +852,98 @@ async fn handle_refresh_token_grant(state: AppState, headers: HeaderMap, req: To
         return json_with_headers(
             StatusCode::UNAUTHORIZED,
             json!({"error":"invalid_client"}),
-            &[("www-authenticate", "Basic realm=\"token\", error=\"invalid_client\"".to_string())],
+            &[(
+                "www-authenticate",
+                "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+            )],
         );
     }
 
     // Require refresh_token
-    let refresh_token_str = match req.refresh_token {
-        Some(rt) => rt,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_request","error_description":"refresh_token required"}))).into_response(),
-    };
+    let refresh_token_str =
+        match req.refresh_token {
+            Some(rt) => rt,
+            None => return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    json!({"error":"invalid_request","error_description":"refresh_token required"}),
+                ),
+            )
+                .into_response(),
+        };
 
     // Get and validate refresh token
-    let refresh_token = match storage::get_refresh_token(&state.db, &refresh_token_str).await {
-        Ok(Some(rt)) => rt,
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant","error_description":"invalid refresh_token"}))).into_response(),
-    };
+    let refresh_token =
+        match storage::get_refresh_token(&state.db, &refresh_token_str).await {
+            Ok(Some(rt)) => rt,
+            _ => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_grant","error_description":"invalid refresh_token"})),
+            )
+                .into_response(),
+        };
 
     // Validate client_id matches
     if refresh_token.client_id != client_id {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_grant"})),
+        )
+            .into_response();
     }
 
     // Issue new access token
-    let access = match storage::issue_access_token(&state.db, &client_id, &refresh_token.subject, &refresh_token.scope, 3600).await {
+    let access = match storage::issue_access_token(
+        &state.db,
+        &client_id,
+        &refresh_token.subject,
+        &refresh_token.scope,
+        3600,
+    )
+    .await
+    {
         Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"server_error","details":e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"server_error","details":e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
     // Build ID Token (no nonce, no auth_time for refresh grants)
-    let id_token = match build_id_token(&state, &client_id, &refresh_token.subject, None, None, Some(&access.token)).await {
+    let id_token = match build_id_token(
+        &state,
+        &client_id,
+        &refresh_token.subject,
+        None,
+        None,
+        Some(&access.token),
+    )
+    .await
+    {
         Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"server_error","details":e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"server_error","details":e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
     // Rotate refresh token (issue new one and revoke old one)
-    let new_refresh_token = match storage::rotate_refresh_token(&state.db, &refresh_token_str, &client_id, &refresh_token.subject, &refresh_token.scope, 2592000).await {
+    let new_refresh_token = match storage::rotate_refresh_token(
+        &state.db,
+        &refresh_token_str,
+        &client_id,
+        &refresh_token.subject,
+        &refresh_token.scope,
+        2592000,
+    )
+    .await
+    {
         Ok(rt) => Some(rt.token),
         Err(_) => None, // Don't fail the whole request if rotation fails
     };
@@ -640,10 +967,16 @@ async fn handle_refresh_token_grant(state: AppState, headers: HeaderMap, req: To
     )
 }
 
-fn authenticate_client(headers: &HeaderMap, req: &TokenRequest) -> Result<(String, String), Response> {
+fn authenticate_client(
+    headers: &HeaderMap,
+    req: &TokenRequest,
+) -> Result<(String, String), Response> {
     // Try client_secret_basic first (Authorization header)
     let mut basic_client: Option<(String, String)> = None;
-    if let Some(auth_val) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
         if let Some(b64) = auth_val.strip_prefix("Basic ") {
             if let Ok(mut decoded) = Base64::decode_vec(b64) {
                 if let Ok(s) = String::from_utf8(std::mem::take(&mut decoded)) {
@@ -661,27 +994,39 @@ fn authenticate_client(headers: &HeaderMap, req: &TokenRequest) -> Result<(Strin
         // Try client_secret_post (form body)
         match (req.client_id.clone(), req.client_secret.clone()) {
             (Some(id), Some(sec)) => Ok((id, sec)),
-            _ => {
-                Err(json_with_headers(
-                    StatusCode::UNAUTHORIZED,
-                    json!({"error":"invalid_client","error_description":"missing client authentication"}),
-                    &[("www-authenticate", "Basic realm=\"token\", error=\"invalid_client\"".to_string())],
-                ))
-            }
+            _ => Err(json_with_headers(
+                StatusCode::UNAUTHORIZED,
+                json!({"error":"invalid_client","error_description":"missing client authentication"}),
+                &[(
+                    "www-authenticate",
+                    "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                )],
+            )),
         }
     }
 }
 
-async fn userinfo(State(state): State<AppState>, req: axum::http::Request<axum::body::Body>) -> impl IntoResponse {
+async fn userinfo(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+) -> impl IntoResponse {
     // Extract bearer token
-    let token_opt = req.headers().get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|s| s.strip_prefix("Bearer ")).map(|s| s.to_string());
+    let token_opt = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
     let token = match token_opt {
         Some(t) => t,
         None => {
             return json_with_headers(
                 StatusCode::UNAUTHORIZED,
                 json!({"error":"invalid_token"}),
-                &[("www-authenticate", "Bearer realm=\"userinfo\", error=\"invalid_token\"".to_string())],
+                &[(
+                    "www-authenticate",
+                    "Bearer realm=\"userinfo\", error=\"invalid_token\"".to_string(),
+                )],
             )
         }
     };
@@ -691,19 +1036,30 @@ async fn userinfo(State(state): State<AppState>, req: axum::http::Request<axum::
             return json_with_headers(
                 StatusCode::UNAUTHORIZED,
                 json!({"error":"invalid_token"}),
-                &[("www-authenticate", "Bearer realm=\"userinfo\", error=\"invalid_token\"".to_string())],
+                &[(
+                    "www-authenticate",
+                    "Bearer realm=\"userinfo\", error=\"invalid_token\"".to_string(),
+                )],
             )
         }
     };
     let mut claims = serde_json::Map::new();
-    claims.insert("sub".to_string(), serde_json::Value::String(token_row.subject.clone()));
+    claims.insert(
+        "sub".to_string(),
+        serde_json::Value::String(token_row.subject.clone()),
+    );
     // Optional: email claims from properties
     if let Ok(Some(email)) = storage::get_property(&state.db, &token_row.subject, "email").await {
         if let Some(email_str) = email.as_str() {
-            claims.insert("email".to_string(), serde_json::Value::String(email_str.to_string()));
+            claims.insert(
+                "email".to_string(),
+                serde_json::Value::String(email_str.to_string()),
+            );
         }
     }
-    if let Ok(Some(verified)) = storage::get_property(&state.db, &token_row.subject, "email_verified").await {
+    if let Ok(Some(verified)) =
+        storage::get_property(&state.db, &token_row.subject, "email_verified").await
+    {
         claims.insert("email_verified".to_string(), verified);
     }
     (StatusCode::OK, Json(serde_json::Value::Object(claims))).into_response()
@@ -725,11 +1081,17 @@ struct RegistrationResponse {
     token_endpoint_auth_method: String,
 }
 
-async fn register_client(State(state): State<AppState>, Json(req): Json<RegistrationRequest>) -> impl IntoResponse {
+async fn register_client(
+    State(state): State<AppState>,
+    Json(req): Json<RegistrationRequest>,
+) -> impl IntoResponse {
     if req.redirect_uris.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_client_metadata", "error_description": "redirect_uris required"}))).into_response();
     }
-    let input = storage::NewClient { client_name: req.client_name.clone(), redirect_uris: req.redirect_uris.clone() };
+    let input = storage::NewClient {
+        client_name: req.client_name.clone(),
+        redirect_uris: req.redirect_uris.clone(),
+    };
     match storage::create_client(&state.db, input).await {
         Ok(client) => {
             let resp = RegistrationResponse {
@@ -740,24 +1102,47 @@ async fn register_client(State(state): State<AppState>, Json(req): Json<Registra
                 client_id_issued_at: client.created_at,
                 token_endpoint_auth_method: "client_secret_post".into(),
             };
-            (StatusCode::CREATED, Json(serde_json::to_value(resp).unwrap())).into_response()
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(resp).unwrap()),
+            )
+                .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
-async fn get_property(State(state): State<AppState>, Path((owner, key)): Path<(String, String)>) -> impl IntoResponse {
+async fn get_property(
+    State(state): State<AppState>,
+    Path((owner, key)): Path<(String, String)>,
+) -> impl IntoResponse {
     match storage::get_property(&state.db, &owner, &key).await {
         Ok(Some(v)) => (StatusCode::OK, Json(v)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "not_found"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
-async fn set_property(State(state): State<AppState>, Path((owner, key)): Path<(String, String)>, Json(v): Json<Value>) -> impl IntoResponse {
+async fn set_property(
+    State(state): State<AppState>,
+    Path((owner, key)): Path<(String, String)>,
+    Json(v): Json<Value>,
+) -> impl IntoResponse {
     match storage::set_property(&state.db, &owner, &key, &v).await {
         Ok(_) => (StatusCode::NO_CONTENT, ()).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -780,7 +1165,8 @@ async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
 
     let return_to = q.return_to.unwrap_or_default();
 
-    let html = format!(r#"
+    let html = format!(
+        r#"
         <!DOCTYPE html>
         <html>
         <head>
@@ -811,7 +1197,8 @@ async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
             </form>
         </body>
         </html>
-    "#);
+    "#
+    );
 
     Html(html)
 }
@@ -861,15 +1248,17 @@ async fn login_submit(
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
     // Verify credentials
-    let subject = match storage::verify_user_password(&state.db, &form.username, &form.password).await {
-        Ok(Some(sub)) => sub,
-        _ => {
-            // Redirect back to login with error
-            let return_to = urlencoded(&form.return_to.unwrap_or_default());
-            let error = urlencoded("Invalid username or password");
-            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}")).into_response();
-        }
-    };
+    let subject =
+        match storage::verify_user_password(&state.db, &form.username, &form.password).await {
+            Ok(Some(sub)) => sub,
+            _ => {
+                // Redirect back to login with error
+                let return_to = urlencoded(&form.return_to.unwrap_or_default());
+                let error = urlencoded("Invalid username or password");
+                return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                    .into_response();
+            }
+        };
 
     // Create session
     let user_agent = headers
@@ -882,7 +1271,8 @@ async fn login_submit(
         Err(_) => {
             let return_to = urlencoded(&form.return_to.unwrap_or_default());
             let error = urlencoded("Failed to create session");
-            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}")).into_response();
+            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                .into_response();
         }
     };
 
@@ -908,7 +1298,10 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
 
     Response::builder()
         .status(StatusCode::SEE_OTHER)
-        .header(axum::http::header::SET_COOKIE, SessionCookie::delete_cookie_header())
+        .header(
+            axum::http::header::SET_COOKIE,
+            SessionCookie::delete_cookie_header(),
+        )
         .header(axum::http::header::LOCATION, "/")
         .body(Body::empty())
         .unwrap()
@@ -924,5 +1317,8 @@ fn html_escape(s: &str) -> String {
 }
 
 fn urlencoded(s: &str) -> String {
-    serde_urlencoded::to_string(&[("", s)]).unwrap_or_default().trim_start_matches('=').to_string()
+    serde_urlencoded::to_string(&[("", s)])
+        .unwrap_or_default()
+        .trim_start_matches('=')
+        .to_string()
 }

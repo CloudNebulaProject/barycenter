@@ -54,7 +54,9 @@ impl Default for Server {
 
 impl Default for Database {
     fn default() -> Self {
-        Self { url: "sqlite://crabidp.db?mode=rwc".to_string() }
+        Self {
+            url: "sqlite://crabidp.db?mode=rwc".to_string(),
+        }
     }
 }
 
@@ -87,10 +89,7 @@ impl Settings {
             .into_diagnostic()?
             .set_default("server.port", Server::default().port)
             .into_diagnostic()?
-            .set_default(
-                "database.url",
-                Database::default().url,
-            )
+            .set_default("database.url", Database::default().url)
             .into_diagnostic()?
             .set_default(
                 "keys.jwks_path",
@@ -101,7 +100,10 @@ impl Settings {
             .into_diagnostic()?
             .set_default(
                 "keys.private_key_path",
-                Keys::default().private_key_path.to_string_lossy().to_string(),
+                Keys::default()
+                    .private_key_path
+                    .to_string_lossy()
+                    .to_string(),
             )
             .into_diagnostic()?;
 
@@ -111,9 +113,7 @@ impl Settings {
         }
 
         // Environment overrides: CRABIDP__SERVER__PORT=9090, etc.
-        builder = builder.add_source(
-            config::Environment::with_prefix("CRABIDP").separator("__"),
-        );
+        builder = builder.add_source(config::Environment::with_prefix("CRABIDP").separator("__"));
 
         let cfg = builder.build().into_diagnostic()?;
         let mut s: Settings = cfg.try_deserialize().into_diagnostic()?;

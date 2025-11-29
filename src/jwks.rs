@@ -2,9 +2,9 @@ use crate::errors::CrabError;
 use crate::settings::Keys;
 use base64ct::Encoding;
 use josekit::jwk::Jwk;
-use josekit::jwt::JwtPayload;
-use josekit::jwt;
 use josekit::jws::{JwsHeader, RS256};
+use josekit::jwt;
+use josekit::jwt::JwtPayload;
 use rand::RngCore;
 use serde_json::{json, Value};
 use std::fs;
@@ -20,8 +20,12 @@ pub struct JwksManager {
 impl JwksManager {
     pub async fn new(cfg: Keys) -> Result<Self, CrabError> {
         // Ensure parent dirs exist
-        if let Some(parent) = cfg.jwks_path.parent() { fs::create_dir_all(parent)?; }
-        if let Some(parent) = cfg.private_key_path.parent() { fs::create_dir_all(parent)?; }
+        if let Some(parent) = cfg.jwks_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = cfg.private_key_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         // If private key exists, load it; otherwise generate and persist both private and public
         let private_jwk = if cfg.private_key_path.exists() {
@@ -51,12 +55,20 @@ impl JwksManager {
         // Load public JWKS value
         let public_jwks_value: Value = serde_json::from_str(&fs::read_to_string(&cfg.jwks_path)?)?;
 
-        Ok(Self { cfg, public_jwks_value: Arc::new(public_jwks_value), private_jwk: Arc::new(private_jwk) })
+        Ok(Self {
+            cfg,
+            public_jwks_value: Arc::new(public_jwks_value),
+            private_jwk: Arc::new(private_jwk),
+        })
     }
 
-    pub fn jwks_json(&self) -> Value { (*self.public_jwks_value).clone() }
+    pub fn jwks_json(&self) -> Value {
+        (*self.public_jwks_value).clone()
+    }
 
-    pub fn private_jwk(&self) -> Jwk { (*self.private_jwk).clone() }
+    pub fn private_jwk(&self) -> Jwk {
+        (*self.private_jwk).clone()
+    }
 
     pub fn sign_jwt_rs256(&self, payload: &JwtPayload) -> Result<String, CrabError> {
         // Use RS256 signer from josekit
