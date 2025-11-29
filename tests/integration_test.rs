@@ -15,17 +15,32 @@ impl TestServer {
         let port = 8080;
         let base_url = format!("http://0.0.0.0:{}", port);
 
+        // Use the pre-built binary from target/debug instead of recompiling with cargo run
+        // This avoids compilation timeouts in CI
+        // The test binary is in target/debug/deps/, we need to go up to target/debug/
+        let binary_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                // Go up from target/debug/deps/test-binary to target/debug
+                p.parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.join("barycenter"))
+            })
+            .unwrap_or_else(|| {
+                // Fallback to relative path
+                std::path::PathBuf::from("target/debug/barycenter")
+            });
+
         // Use piped stderr so we can capture errors if server fails to start
-        let mut process = Command::new("cargo")
-            .args(["run", "--release", "--"])
+        let mut process = Command::new(&binary_path)
             .env("RUST_LOG", "error")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("Failed to start server");
 
-        // Wait for server to start - give it more time for first compilation
-        thread::sleep(Duration::from_secs(5));
+        // Wait for server to start
+        thread::sleep(Duration::from_secs(2));
 
         // Verify server is running by checking discovery endpoint
         let client = reqwest::blocking::Client::new();
