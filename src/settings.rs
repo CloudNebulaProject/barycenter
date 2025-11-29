@@ -2,8 +2,7 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub server: Server,
     pub database: Database,
@@ -71,7 +70,6 @@ impl Default for Keys {
         }
     }
 }
-
 
 impl Settings {
     pub fn load(path: &str) -> Result<Self> {
