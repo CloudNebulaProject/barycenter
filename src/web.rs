@@ -1317,7 +1317,7 @@ fn html_escape(s: &str) -> String {
 }
 
 fn urlencoded(s: &str) -> String {
-    serde_urlencoded::to_string(&[("", s)])
+    serde_urlencoded::to_string([("", s)])
         .unwrap_or_default()
         .trim_start_matches('=')
         .to_string()

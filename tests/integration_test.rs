@@ -220,7 +220,7 @@ fn test_openidconnect_authorization_code_flow() {
         .request(&http_client)
         .expect("Failed to exchange code for token");
 
-    assert!(token_response.access_token().secret().len() > 0);
+    assert!(!token_response.access_token().secret().is_empty());
     assert!(token_response.id_token().is_some());
 
     let id_token = token_response.id_token().expect("No ID token");
@@ -352,7 +352,7 @@ fn test_oauth2_authorization_code_flow() {
         .request(&http_client)
         .expect("Failed to exchange code for token");
 
-    assert!(token_response.access_token().secret().len() > 0);
+    assert!(!token_response.access_token().secret().is_empty());
     assert!(token_response.expires_in().is_some());
 
     let access_token = token_response.access_token().secret();

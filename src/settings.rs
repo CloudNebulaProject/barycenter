@@ -1,8 +1,9 @@
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Settings {
     pub server: Server,
     pub database: Database,
@@ -71,16 +72,6 @@ impl Default for Keys {
     }
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            server: Server::default(),
-            database: Database::default(),
-            keys: Keys::default(),
-            federation: Federation::default(),
-        }
-    }
-}
 
 impl Settings {
     pub fn load(path: &str) -> Result<Self> {
