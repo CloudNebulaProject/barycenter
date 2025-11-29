@@ -64,7 +64,7 @@ cargo nextest run test_name
 The application loads configuration from:
 1. Default values (defined in `src/settings.rs`)
 2. Configuration file (default: `config.toml`)
-3. Environment variables with prefix `CRABIDP__` (e.g., `CRABIDP__SERVER__PORT=9090`)
+3. Environment variables with prefix `BARYCENTER__` (e.g., `BARYCENTER__SERVER__PORT=9090`)
 
 Environment variables use double underscores as separators for nested keys.
 

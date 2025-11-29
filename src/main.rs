@@ -10,7 +10,7 @@ use miette::{IntoDiagnostic, Result};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser, Debug)]
-#[command(name = "crabidp", version, about = "OpenID Connect IdP (scaffold)")]
+#[command(name = "barycenter", version, about = "OpenID Connect Identity Provider")]
 struct Cli {
     /// Path to configuration file
     #[arg(short, long, default_value = "config.toml")]

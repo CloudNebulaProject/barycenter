@@ -20,7 +20,7 @@ pub struct Server {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Database {
-    /// SeaORM/SQLx connection string, e.g., sqlite://crabidp.db?mode=rwc
+    /// SeaORM/SQLx connection string, e.g., sqlite://barycenter.db?mode=rwc
     pub url: String,
 }
 
@@ -55,7 +55,7 @@ impl Default for Server {
 impl Default for Database {
     fn default() -> Self {
         Self {
-            url: "sqlite://crabidp.db?mode=rwc".to_string(),
+            url: "sqlite://barycenter.db?mode=rwc".to_string(),
         }
     }
 }

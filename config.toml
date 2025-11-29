@@ -5,7 +5,7 @@ port = 8080
 # public_base_url = "https://idp.example.com"
 
 [database]
-url = "sqlite://crabidp.db?mode=rwc"
+url = "sqlite://barycenter.db?mode=rwc"
 
 [keys]
 jwks_path = "data/jwks.json"

@@ -53,7 +53,7 @@ port = 8080
 public_base_url = "http://localhost:8080"
 
 [database]
-connection_string = "sqlite://crabidp.db?mode=rwc"
+connection_string = "sqlite://barycenter.db?mode=rwc"
 
 [keys]
 jwks_path = "data/jwks.json"

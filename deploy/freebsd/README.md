@@ -37,7 +37,7 @@ This directory contains rc.d script for running Barycenter on FreeBSD systems.
    Edit `/usr/local/etc/barycenter/config.toml` and update paths:
    ```toml
    [database]
-   url = "sqlite:///var/db/barycenter/crabidp.db?mode=rwc"
+   url = "sqlite:///var/db/barycenter/barycenter.db?mode=rwc"
 
    [keys]
    jwks_path = "/var/db/barycenter/data/jwks.json"

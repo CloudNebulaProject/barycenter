@@ -14,11 +14,11 @@ services:
 
     environment:
       # Override config via environment variables
-      # Use CRABIDP__ prefix with double underscores for nested keys
+      # Use BARYCENTER__ prefix with double underscores for nested keys
       - RUST_LOG=info
-      # Example: CRABIDP__SERVER__PORT=8080
-      # Example: CRABIDP__SERVER__PUBLIC_BASE_URL=https://idp.example.com
-      # Example: CRABIDP__DATABASE__URL=sqlite:///app/data/crabidp.db?mode=rwc
+      # Example: BARYCENTER__SERVER__PORT=8080
+      # Example: BARYCENTER__SERVER__PUBLIC_BASE_URL=https://idp.example.com
+      # Example: BARYCENTER__DATABASE__URL=sqlite:///app/data/barycenter.db?mode=rwc
 
     volumes:
       # Persist database and keys

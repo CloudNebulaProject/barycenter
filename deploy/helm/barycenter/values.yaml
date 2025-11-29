@@ -55,6 +55,30 @@ ingress:
   #    hosts:
   #      - idp.example.com
 
+# Kubernetes Gateway API support (alternative to Ingress)
+# Requires Gateway API CRDs to be installed in the cluster
+gatewayAPI:
+  enabled: false
+  annotations: {}
+  # Reference to the Gateway resource
+  parentRefs:
+    - name: gateway
+      namespace: gateway-system
+      # Optional: specify listener name
+      # sectionName: https
+  # Hostnames for the HTTPRoute
+  hostnames:
+    - idp.example.com
+  # Optional: backend weight for traffic splitting
+  # backendWeight: 100
+  # Optional: filters for request/response modification
+  filters: []
+  #  - type: RequestHeaderModifier
+  #    requestHeaderModifier:
+  #      add:
+  #        - name: X-Custom-Header
+  #          value: custom-value
+
 resources:
   limits:
     cpu: 1000m
@@ -84,7 +108,7 @@ config:
     # publicBaseUrl: "https://idp.example.com"
 
   database:
-    url: "sqlite:///app/data/crabidp.db?mode=rwc"
+    url: "sqlite:///app/data/barycenter.db?mode=rwc"
 
   keys:
     jwksPath: "/app/data/jwks.json"
@@ -99,7 +123,7 @@ env:
   - name: RUST_LOG
     value: "info"
   # Add additional environment variables here
-  # - name: CRABIDP__SERVER__PUBLIC_BASE_URL
+  # - name: BARYCENTER__SERVER__PUBLIC_BASE_URL
   #   value: "https://idp.example.com"
 
 # Persistence for database and keys

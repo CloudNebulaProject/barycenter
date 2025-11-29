@@ -13,7 +13,15 @@
       "Bash(pkill:*)",
       "mcp__github__search_repositories",
       "mcp__github__get_me",
-      "mcp__github__search_users"
+      "mcp__github__search_users",
+      "Bash(git push:*)",
+      "Bash(mkdir:*)",
+      "Bash(git add:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []

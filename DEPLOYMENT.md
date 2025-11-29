@@ -71,7 +71,7 @@ Edit `docker-compose.yml` to customize:
 ```yaml
 environment:
   - RUST_LOG=info
-  - CRABIDP__SERVER__PUBLIC_BASE_URL=https://idp.example.com
+  - BARYCENTER__SERVER__PUBLIC_BASE_URL=https://idp.example.com
 ```
 
 ---
@@ -149,6 +149,53 @@ helm install barycenter ./deploy/helm/barycenter \
   --namespace barycenter \
   --values my-values.yaml
 ```
+
+4. **Using Gateway API instead of Ingress:**
+
+The Helm chart supports Kubernetes Gateway API as a modern alternative to Ingress. Gateway API requires the Gateway API CRDs to be installed in your cluster.
+
+Create `gateway-values.yaml`:
+
+```yaml
+# Disable traditional Ingress
+ingress:
+  enabled: false
+
+# Enable Gateway API
+gatewayAPI:
+  enabled: true
+  parentRefs:
+    - name: my-gateway
+      namespace: gateway-system
+      sectionName: https  # Optional: target specific listener
+  hostnames:
+    - idp.example.com
+  annotations:
+    # Optional annotations for the HTTPRoute
+    example.com/custom: value
+
+config:
+  server:
+    publicBaseUrl: "https://idp.example.com"
+
+persistence:
+  enabled: true
+  size: 20Gi
+```
+
+Install with Gateway API:
+
+```bash
+helm install barycenter ./deploy/helm/barycenter \
+  --namespace barycenter \
+  --values gateway-values.yaml
+```
+
+**Benefits of Gateway API:**
+- More expressive and extensible than Ingress
+- Role-oriented design with clear separation of concerns
+- Better support for advanced traffic management
+- Vendor-neutral and portable across implementations
 
 ### Management
 
@@ -297,15 +344,15 @@ sudo svcadm enable barycenter
 
 ### Environment Variables
 
-All configuration can be overridden using environment variables with the `CRABIDP__` prefix:
+All configuration can be overridden using environment variables with the `BARYCENTER__` prefix:
 
 ```bash
 # Override server settings
-export CRABIDP__SERVER__PORT=9090
-export CRABIDP__SERVER__PUBLIC_BASE_URL=https://idp.example.com
+export BARYCENTER__SERVER__PORT=9090
+export BARYCENTER__SERVER__PUBLIC_BASE_URL=https://idp.example.com
 
 # Override database
-export CRABIDP__DATABASE__URL=sqlite:///custom/path/db.sqlite
+export BARYCENTER__DATABASE__URL=sqlite:///custom/path/db.sqlite
 
 # Set logging
 export RUST_LOG=debug
@@ -322,7 +369,7 @@ port = 8080
 public_base_url = "https://idp.example.com"  # Required in production
 
 [database]
-url = "sqlite://crabidp.db?mode=rwc"
+url = "sqlite://barycenter.db?mode=rwc"
 
 [keys]
 jwks_path = "data/jwks.json"
@@ -399,7 +446,7 @@ chown barycenter:barycenter /var/lib/barycenter
 
 **Critical files to backup:**
 1. Private RSA key (`private_key.pem`)
-2. Database (`crabidp.db`)
+2. Database (`barycenter.db`)
 3. Configuration (`config.toml`)
 
 **Backup script example:**
@@ -410,7 +457,7 @@ BACKUP_DIR=/backup/barycenter/$(date +%Y%m%d)
 mkdir -p $BACKUP_DIR
 
 # Backup database
-sqlite3 /var/lib/barycenter/crabidp.db ".backup '$BACKUP_DIR/crabidp.db'"
+sqlite3 /var/lib/barycenter/barycenter.db ".backup '$BACKUP_DIR/barycenter.db'"
 
 # Backup keys and config
 cp /var/lib/barycenter/data/private_key.pem $BACKUP_DIR/

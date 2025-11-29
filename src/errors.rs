@@ -4,31 +4,31 @@ use thiserror::Error;
 #[derive(Debug, Error, Diagnostic)]
 pub enum CrabError {
     #[error("I/O error: {0}")]
-    #[diagnostic(code(crabidp::io))]
+    #[diagnostic(code(barycenter::io))]
     Io(#[from] std::io::Error),
 
     #[error("Config error: {0}")]
-    #[diagnostic(code(crabidp::config))]
+    #[diagnostic(code(barycenter::config))]
     Config(#[from] config::ConfigError),
 
     #[error("Serialization error: {0}")]
-    #[diagnostic(code(crabidp::serde))]
+    #[diagnostic(code(barycenter::serde))]
     Serde(#[from] serde_json::Error),
 
     #[error("Database error: {0}")]
-    #[diagnostic(code(crabidp::db))]
+    #[diagnostic(code(barycenter::db))]
     Db(#[from] sea_orm::DbErr),
 
     #[error("JOSE error: {0}")]
-    #[diagnostic(code(crabidp::jose))]
+    #[diagnostic(code(barycenter::jose))]
     Jose(String),
 
     #[error("Bad request: {0}")]
-    #[diagnostic(code(crabidp::bad_request))]
+    #[diagnostic(code(barycenter::bad_request))]
     BadRequest(String),
 
     #[error("{0}")]
-    #[diagnostic(code(crabidp::other))]
+    #[diagnostic(code(barycenter::other))]
     Other(String),
 }
 

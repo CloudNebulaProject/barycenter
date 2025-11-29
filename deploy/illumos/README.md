@@ -40,7 +40,7 @@ This directory contains SMF (Service Management Facility) manifest for running B
    Edit `/etc/barycenter/config.toml` and update paths:
    ```toml
    [database]
-   url = "sqlite:///var/barycenter/crabidp.db?mode=rwc"
+   url = "sqlite:///var/barycenter/barycenter.db?mode=rwc"
 
    [keys]
    jwks_path = "/var/barycenter/data/jwks.json"
@@ -110,7 +110,7 @@ To set environment variables, edit the manifest and modify the `method_environme
 ```xml
 <method_environment>
     <envvar name='RUST_LOG' value='debug' />
-    <envvar name='CRABIDP__SERVER__PUBLIC_BASE_URL' value='https://idp.example.com' />
+    <envvar name='BARYCENTER__SERVER__PUBLIC_BASE_URL' value='https://idp.example.com' />
 </method_environment>
 ```
 

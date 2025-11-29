@@ -32,7 +32,7 @@ This directory contains systemd service files for running Barycenter on Linux sy
    Edit `/etc/barycenter/config.toml` and update paths:
    ```toml
    [database]
-   url = "sqlite:///var/lib/barycenter/crabidp.db?mode=rwc"
+   url = "sqlite:///var/lib/barycenter/barycenter.db?mode=rwc"
 
    [keys]
    jwks_path = "/var/lib/barycenter/data/jwks.json"
@@ -89,6 +89,6 @@ You can override configuration using environment variables in the service file:
 
 ```ini
 [Service]
-Environment="CRABIDP__SERVER__PUBLIC_BASE_URL=https://idp.example.com"
+Environment="BARYCENTER__SERVER__PUBLIC_BASE_URL=https://idp.example.com"
 Environment="RUST_LOG=debug"
 ```
