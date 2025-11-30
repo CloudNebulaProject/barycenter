@@ -64,10 +64,7 @@ async fn seaography_handler(
 }
 
 /// Jobs GraphQL POST handler for job management
-async fn jobs_handler(
-    State(state): State<Arc<JobsState>>,
-    req: GraphQLRequest,
-) -> GraphQLResponse {
+async fn jobs_handler(State(state): State<Arc<JobsState>>, req: GraphQLRequest) -> GraphQLResponse {
     state.schema.execute(req.into_inner()).await.into()
 }
 

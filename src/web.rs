@@ -105,7 +105,10 @@ pub async fn serve(
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/jwks.json", get(jwks_handler))
         .route("/connect/register", post(register_client))
-        .route("/properties/{owner}/{key}", get(get_property).put(set_property))
+        .route(
+            "/properties/{owner}/{key}",
+            get(get_property).put(set_property),
+        )
         .route("/federation/trust-anchors", get(trust_anchors))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", get(logout))
@@ -149,7 +152,10 @@ pub async fn serve(
         .await
         .into_diagnostic()?;
     tracing::info!(%admin_addr, "Admin GraphQL API listening");
-    tracing::info!("GraphQL Playground available at http://{}/admin/playground", admin_addr);
+    tracing::info!(
+        "GraphQL Playground available at http://{}/admin/playground",
+        admin_addr
+    );
 
     tokio::spawn(async move {
         axum::serve(admin_listener, admin_router)
@@ -1191,7 +1197,9 @@ async fn set_property(
         None => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "missing_token", "error_description": "Bearer token required"})),
+                Json(
+                    json!({"error": "missing_token", "error_description": "Bearer token required"}),
+                ),
             )
                 .into_response();
         }

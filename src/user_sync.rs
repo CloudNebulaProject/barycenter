@@ -45,13 +45,7 @@ pub async fn sync_users_from_file(db: &DatabaseConnection, file_path: &str) -> R
     // Read and parse JSON file
     let content = fs::read_to_string(file_path)
         .into_diagnostic()
-        .map_err(|e| {
-            miette::miette!(
-                "Failed to read users file at '{}': {}",
-                file_path,
-                e
-            )
-        })?;
+        .map_err(|e| miette::miette!("Failed to read users file at '{}': {}", file_path, e))?;
 
     let users_file: UsersFile = serde_json::from_str(&content)
         .into_diagnostic()
@@ -165,7 +159,9 @@ async fn sync_user(db: &DatabaseConnection, user_def: &UserDefinition) -> Result
         let user = storage::get_user_by_username(db, &user_def.username)
             .await
             .into_diagnostic()?
-            .ok_or_else(|| miette::miette!("User not found after creation: {}", user_def.username))?;
+            .ok_or_else(|| {
+                miette::miette!("User not found after creation: {}", user_def.username)
+            })?;
 
         storage::set_property(db, &user.subject, key, value)
             .await

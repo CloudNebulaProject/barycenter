@@ -2,7 +2,10 @@ use crate::entities;
 use crate::errors::CrabError;
 use crate::storage;
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
+    Set,
+};
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info};
 
@@ -27,21 +30,15 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
                 Ok(count) => {
                     info!("Cleaned up {} expired sessions", count);
                     if let Some(id) = execution_id {
-                        let _ = complete_job_execution(&db, id, true, None, Some(count as i64))
-                            .await;
+                        let _ =
+                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired sessions: {}", e);
                     if let Some(id) = execution_id {
-                        let _ = complete_job_execution(
-                            &db,
-                            id,
-                            false,
-                            Some(e.to_string()),
-                            None,
-                        )
-                        .await;
+                        let _ =
+                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -69,21 +66,15 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
                 Ok(count) => {
                     info!("Cleaned up {} expired refresh tokens", count);
                     if let Some(id) = execution_id {
-                        let _ = complete_job_execution(&db, id, true, None, Some(count as i64))
-                            .await;
+                        let _ =
+                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired refresh tokens: {}", e);
                     if let Some(id) = execution_id {
-                        let _ = complete_job_execution(
-                            &db,
-                            id,
-                            false,
-                            Some(e.to_string()),
-                            None,
-                        )
-                        .await;
+                        let _ =
+                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -176,7 +167,10 @@ pub async fn trigger_job_manually(
 
     match result {
         Ok(count) => {
-            info!("Manually triggered job {} completed: {} records", job_name, count);
+            info!(
+                "Manually triggered job {} completed: {} records",
+                job_name, count
+            );
             complete_job_execution(db, execution_id, true, None, Some(count as i64)).await?;
         }
         Err(e) => {

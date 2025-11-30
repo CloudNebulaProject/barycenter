@@ -423,11 +423,7 @@ pub async fn consume_auth_code(
 ) -> Result<Option<AuthCode>, CrabError> {
     use entities::auth_code::{Column, Entity};
 
-    if let Some(model) = Entity::find()
-        .filter(Column::Code.eq(code))
-        .one(db)
-        .await?
-    {
+    if let Some(model) = Entity::find().filter(Column::Code.eq(code)).one(db).await? {
         let now = Utc::now().timestamp();
         if model.consumed != 0 || now > model.expires_at {
             return Ok(None);
