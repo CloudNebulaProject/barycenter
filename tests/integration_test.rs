@@ -34,6 +34,7 @@ impl TestServer {
         // Use piped stderr so we can capture errors if server fails to start
         let mut process = Command::new(&binary_path)
             .env("RUST_LOG", "error")
+            .env("BARYCENTER__SERVER__ALLOW_PUBLIC_REGISTRATION", "true") // Enable registration for tests
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()

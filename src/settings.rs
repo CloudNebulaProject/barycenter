@@ -115,8 +115,8 @@ impl Settings {
             builder = builder.add_source(config::File::with_name(path));
         }
 
-        // Environment overrides: CRABIDP__SERVER__PORT=9090, etc.
-        builder = builder.add_source(config::Environment::with_prefix("CRABIDP").separator("__"));
+        // Environment overrides: BARYCENTER__SERVER__PORT=9090, etc.
+        builder = builder.add_source(config::Environment::with_prefix("BARYCENTER").separator("__"));
 
         let cfg = builder.build().into_diagnostic()?;
         let mut s: Settings = cfg.try_deserialize().into_diagnostic()?;
