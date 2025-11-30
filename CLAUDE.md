@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Barycenter is an OpenID Connect Identity Provider (IdP) implementing OAuth 2.0 Authorization Code flow with PKCE. The project is written in Rust using axum for the web framework, SeaORM for database access (SQLite), and josekit for JOSE/JWT operations.
+Barycenter is an OpenID Connect Identity Provider (IdP) implementing OAuth 2.0 Authorization Code flow with PKCE. The project is written in Rust using axum for the web framework, SeaORM for database access (SQLite and PostgreSQL), and josekit for JOSE/JWT operations.
 
 ## Build and Development Commands
 
@@ -68,6 +68,27 @@ The application loads configuration from:
 
 Environment variables use double underscores as separators for nested keys.
 
+### Database Configuration
+
+Barycenter supports both SQLite and PostgreSQL databases. The database backend is automatically detected from the connection string:
+
+**SQLite (default):**
+```toml
+[database]
+url = "sqlite://barycenter.db?mode=rwc"
+```
+
+**PostgreSQL:**
+```toml
+[database]
+url = "postgresql://user:password@localhost/barycenter"
+```
+
+Or via environment variable:
+```bash
+export BARYCENTER__DATABASE__URL="postgresql://user:password@localhost/barycenter"
+```
+
 ## Architecture and Module Structure
 
 ### Entry Point (`src/main.rs`)
@@ -81,14 +102,14 @@ The application initializes in this order:
 ### Settings (`src/settings.rs`)
 Manages configuration with four main sections:
 - `Server`: listen address and public base URL (issuer)
-- `Database`: SQLite connection string
+- `Database`: database connection string (SQLite or PostgreSQL)
 - `Keys`: JWKS and private key paths, signing algorithm
 - `Federation`: trust anchor URLs (future use)
 
 The `issuer()` method returns the OAuth issuer URL, preferring `public_base_url` or falling back to `http://{host}:{port}`.
 
 ### Storage (`src/storage.rs`)
-Database layer with raw SQL using SeaORM's `DatabaseConnection`. Tables:
+Database layer with raw SQL using SeaORM's `DatabaseConnection`. Supports both SQLite and PostgreSQL backends, automatically detected from the connection string. Tables:
 - `clients`: OAuth client registrations (client_id, client_secret, redirect_uris)
 - `auth_codes`: Authorization codes with PKCE challenge, subject, scope, nonce
 - `access_tokens`: Bearer tokens with subject, scope, expiration

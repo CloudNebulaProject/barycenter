@@ -23,8 +23,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = "3"
 
-# SeaORM for SQLite
-sea-orm = { version = "1", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+# SeaORM for SQLite and PostgreSQL
+sea-orm = { version = "1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros"] }
 
 # JOSE / JWKS & JWT
 josekit = "0.10"
@@ -47,6 +47,14 @@ tower_governor = "0.4"
 # Validation
 regex = "1"
 url = "2"
+
+# GraphQL Admin API
+seaography = { version = "1", features = ["with-decimal", "with-chrono", "with-uuid"] }
+async-graphql = "7"
+async-graphql-axum = "7"
+
+# Background job scheduler
+tokio-cron-scheduler = "0.13"
 
 [dev-dependencies]
 openidconnect = { version = "4", features = ["reqwest-blocking"] }

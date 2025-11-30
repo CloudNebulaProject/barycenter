@@ -1,8 +1,13 @@
+mod admin_graphql;
+mod admin_mutations;
+mod entities;
 mod errors;
+mod jobs;
 mod jwks;
 mod session;
 mod settings;
 mod storage;
+mod user_sync;
 mod web;
 
 use clap::Parser;
@@ -19,6 +24,19 @@ struct Cli {
     /// Path to configuration file
     #[arg(short, long, default_value = "config.toml")]
     config: String,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Parser, Debug)]
+enum Command {
+    /// Sync users from a JSON file (idempotent)
+    SyncUsers {
+        /// Path to JSON file containing users
+        #[arg(short, long)]
+        file: String,
+    },
 }
 
 #[tokio::main]
@@ -36,14 +54,34 @@ async fn main() -> Result<()> {
     // init storage (database)
     let db = storage::init(&settings.database).await?;
 
-    // ensure test users exist
-    ensure_test_users(&db).await?;
+    // Handle subcommands
+    match cli.command {
+        Some(Command::SyncUsers { file }) => {
+            // Run user sync and exit
+            user_sync::sync_users_from_file(&db, &file).await?;
+            tracing::info!("User sync completed successfully");
+            return Ok(());
+        }
+        None => {
+            // Normal server startup
+            // ensure test users exist
+            ensure_test_users(&db).await?;
 
-    // init jwks (generate if missing)
-    let jwks_mgr = jwks::JwksManager::new(settings.keys.clone()).await?;
+            // init jwks (generate if missing)
+            let jwks_mgr = jwks::JwksManager::new(settings.keys.clone()).await?;
 
-    // start web server
-    web::serve(settings, db, jwks_mgr).await?;
+            // build admin GraphQL schemas
+            let seaography_schema = admin_graphql::build_seaography_schema(db.clone());
+            let jobs_schema = admin_graphql::build_jobs_schema(db.clone());
+
+            // init and start background job scheduler
+            let _scheduler = jobs::init_scheduler(db.clone()).await?;
+
+            // start web server (includes both public and admin servers)
+            web::serve(settings, db, jwks_mgr, seaography_schema, jobs_schema).await?;
+        }
+    }
+
     Ok(())
 }
 

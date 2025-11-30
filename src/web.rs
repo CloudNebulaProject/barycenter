@@ -81,6 +81,12 @@ pub async fn serve(
     settings: Settings,
     db: DatabaseConnection,
     jwks: JwksManager,
+    seaography_schema: async_graphql::dynamic::Schema,
+    jobs_schema: async_graphql::Schema<
+        crate::admin_mutations::AdminQuery,
+        crate::admin_mutations::AdminMutation,
+        async_graphql::EmptySubscription,
+    >,
 ) -> miette::Result<()> {
     let state = AppState {
         settings: Arc::new(settings),
@@ -95,30 +101,66 @@ pub async fn serve(
     // - Login endpoint: 5 attempts/min per IP
     // - Authorize endpoint: 20 req/min per IP
 
-    let router = Router::new()
+    let mut router = Router::new()
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/jwks.json", get(jwks_handler))
         .route("/connect/register", post(register_client))
-        .route("/properties/{owner}/{key}", get(get_property))
+        .route("/properties/{owner}/{key}", get(get_property).put(set_property))
         .route("/federation/trust-anchors", get(trust_anchors))
-        .route("/register", post(register_user))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", get(logout))
         .route("/authorize", get(authorize))
         .route("/token", post(token))
-        .route("/userinfo", get(userinfo))
+        .route("/userinfo", get(userinfo));
+
+    // Conditionally add public registration route
+    if state.settings.server.allow_public_registration {
+        tracing::info!("Public user registration is ENABLED");
+        router = router.route("/register", post(register_user));
+    } else {
+        tracing::info!("Public user registration is DISABLED - use admin API");
+    }
+
+    let router = router
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
 
-    let addr: SocketAddr = format!(
+    let public_addr: SocketAddr = format!(
         "{}:{}",
         state.settings.server.host, state.settings.server.port
     )
     .parse()
     .map_err(|e| miette::miette!("bad listen addr: {e}"))?;
-    tracing::info!(%addr, "listening");
+
+    // Start admin GraphQL server on separate port
+    let admin_port = state
+        .settings
+        .server
+        .admin_port
+        .unwrap_or(state.settings.server.port + 1);
+    let admin_addr: SocketAddr = format!("{}:{}", state.settings.server.host, admin_port)
+        .parse()
+        .map_err(|e| miette::miette!("bad admin addr: {e}"))?;
+
+    let admin_router = crate::admin_graphql::router(seaography_schema, jobs_schema);
+
+    // Spawn admin server in background
+    let admin_listener = tokio::net::TcpListener::bind(admin_addr)
+        .await
+        .into_diagnostic()?;
+    tracing::info!(%admin_addr, "Admin GraphQL API listening");
+    tracing::info!("GraphQL Playground available at http://{}/admin/playground", admin_addr);
+
+    tokio::spawn(async move {
+        axum::serve(admin_listener, admin_router)
+            .await
+            .expect("Admin server failed");
+    });
+
+    // Start public server
+    tracing::info!(%public_addr, "Public API listening");
     tracing::warn!("Rate limiting should be configured at the reverse proxy level for production");
-    let listener = tokio::net::TcpListener::bind(addr)
+    let listener = tokio::net::TcpListener::bind(public_addr)
         .await
         .into_diagnostic()?;
     axum::serve(listener, router).await.into_diagnostic()?;
@@ -1134,13 +1176,80 @@ async fn get_property(
 async fn set_property(
     State(state): State<AppState>,
     Path((owner, key)): Path<(String, String)>,
-    Json(v): Json<Value>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
+    // Extract bearer token
+    let token_opt = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    let token = match token_opt {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "missing_token", "error_description": "Bearer token required"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate token and get subject
+    let token_row = match storage::get_access_token(&state.db, &token).await {
+        Ok(Some(t)) => t,
+        _ => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid_token", "error_description": "Invalid or expired token"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check if the authenticated user is trying to set their own property
+    if token_row.subject != owner {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "forbidden",
+                "error_description": "You can only set your own properties"
+            })),
+        )
+            .into_response();
+    }
+
+    // Extract JSON body
+    let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid_body", "error_description": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let v: Value = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid_json", "error_description": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Set the property
     match storage::set_property(&state.db, &owner, &key, &v).await {
         Ok(_) => (StatusCode::NO_CONTENT, ()).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
+            Json(json!({"error": "internal_error", "error_description": e.to_string()})),
         )
             .into_response(),
     }

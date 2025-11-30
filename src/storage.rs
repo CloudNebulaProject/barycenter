@@ -1,9 +1,13 @@
+use crate::entities;
 use crate::errors::CrabError;
 use crate::settings::Database as DbCfg;
 use base64ct::Encoding;
 use chrono::Utc;
 use rand::RngCore;
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, Database,
+    DatabaseConnection, DbBackend, EntityTrait, QueryFilter, Set, Statement,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -83,37 +87,50 @@ pub struct RefreshToken {
     pub parent_token: Option<String>, // For token rotation tracking
 }
 
+fn detect_backend(url: &str) -> DbBackend {
+    if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        DbBackend::Postgres
+    } else {
+        DbBackend::Sqlite
+    }
+}
+
 pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
     let db = Database::connect(&cfg.url).await?;
+    let backend = detect_backend(&cfg.url);
+
     // bootstrap schema
-    db.execute(Statement::from_string(
-        DbBackend::Sqlite,
-        "PRAGMA foreign_keys = ON",
-    ))
-    .await?;
+    // Enable foreign keys for SQLite only
+    if backend == DbBackend::Sqlite {
+        db.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA foreign_keys = ON",
+        ))
+        .await?;
+    }
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS clients (
             client_id TEXT PRIMARY KEY,
             client_secret TEXT NOT NULL,
             client_name TEXT,
             redirect_uris TEXT NOT NULL,
-            created_at INTEGER NOT NULL
+            created_at BIGINT NOT NULL
         )
         "#,
     ))
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS properties (
             owner TEXT NOT NULL,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
-            updated_at INTEGER NOT NULL,
+            updated_at BIGINT NOT NULL,
             PRIMARY KEY(owner, key)
         )
         "#,
@@ -121,7 +138,7 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS auth_codes (
             code TEXT PRIMARY KEY,
@@ -132,56 +149,56 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
             nonce TEXT,
             code_challenge TEXT NOT NULL,
             code_challenge_method TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
-            consumed INTEGER NOT NULL DEFAULT 0,
-            auth_time INTEGER
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL,
+            consumed BIGINT NOT NULL DEFAULT 0,
+            auth_time BIGINT
         )
         "#,
     ))
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS access_tokens (
             token TEXT PRIMARY KEY,
             client_id TEXT NOT NULL,
             subject TEXT NOT NULL,
             scope TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
-            revoked INTEGER NOT NULL DEFAULT 0
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL,
+            revoked BIGINT NOT NULL DEFAULT 0
         )
         "#,
     ))
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS users (
             subject TEXT PRIMARY KEY,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
             email TEXT,
-            email_verified INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1
+            email_verified BIGINT NOT NULL DEFAULT 0,
+            created_at BIGINT NOT NULL,
+            enabled BIGINT NOT NULL DEFAULT 1
         )
         "#,
     ))
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
             subject TEXT NOT NULL,
-            auth_time INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
+            auth_time BIGINT NOT NULL,
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL,
             user_agent TEXT,
             ip_address TEXT
         )
@@ -190,22 +207,22 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)",
     ))
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         r#"
         CREATE TABLE IF NOT EXISTS refresh_tokens (
             token TEXT PRIMARY KEY,
             client_id TEXT NOT NULL,
             subject TEXT NOT NULL,
             scope TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
-            revoked INTEGER NOT NULL DEFAULT 0,
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL,
+            revoked BIGINT NOT NULL DEFAULT 0,
             parent_token TEXT
         )
         "#,
@@ -213,8 +230,38 @@ pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
     .await?;
 
     db.execute(Statement::from_string(
-        DbBackend::Sqlite,
+        backend,
         "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at)",
+    ))
+    .await?;
+
+    // Job executions table for tracking background job runs
+    let id_type = match backend {
+        DbBackend::Postgres => "BIGSERIAL PRIMARY KEY",
+        _ => "INTEGER PRIMARY KEY AUTOINCREMENT",
+    };
+    db.execute(Statement::from_string(
+        backend,
+        format!(
+            r#"
+        CREATE TABLE IF NOT EXISTS job_executions (
+            id {},
+            job_name TEXT NOT NULL,
+            started_at BIGINT NOT NULL,
+            completed_at BIGINT,
+            success BIGINT,
+            error_message TEXT,
+            records_processed BIGINT
+        )
+        "#,
+            id_type
+        ),
+    ))
+    .await?;
+
+    db.execute(Statement::from_string(
+        backend,
+        "CREATE INDEX IF NOT EXISTS idx_job_executions_started ON job_executions(started_at)",
     ))
     .await?;
 
@@ -227,19 +274,15 @@ pub async fn create_client(db: &DatabaseConnection, input: NewClient) -> Result<
     let created_at = Utc::now().timestamp();
     let redirect_uris_json = serde_json::to_string(&input.redirect_uris)?;
 
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO clients (client_id, client_secret, client_name, redirect_uris, created_at)
-           VALUES (?, ?, ?, ?, ?)"#,
-        [
-            client_id.clone().into(),
-            client_secret.clone().into(),
-            input.client_name.clone().into(),
-            redirect_uris_json.into(),
-            created_at.into(),
-        ],
-    ))
-    .await?;
+    let client = entities::client::ActiveModel {
+        client_id: Set(client_id.clone()),
+        client_secret: Set(client_secret.clone()),
+        client_name: Set(input.client_name.clone()),
+        redirect_uris: Set(redirect_uris_json),
+        created_at: Set(created_at),
+    };
+
+    client.insert(db).await?;
 
     Ok(Client {
         client_id,
@@ -255,16 +298,15 @@ pub async fn get_property(
     owner: &str,
     key: &str,
 ) -> Result<Option<Value>, CrabError> {
-    if let Some(row) = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT value FROM properties WHERE owner = ? AND key = ?",
-            [owner.into(), key.into()],
-        ))
+    use entities::property::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::Owner.eq(owner))
+        .filter(Column::Key.eq(key))
+        .one(db)
         .await?
     {
-        let value_str: String = row.try_get("", "value").unwrap_or_default();
-        let json: Value = serde_json::from_str(&value_str)?;
+        let json: Value = serde_json::from_str(&model.value)?;
         Ok(Some(json))
     } else {
         Ok(None)
@@ -277,16 +319,28 @@ pub async fn set_property(
     key: &str,
     value: &Value,
 ) -> Result<(), CrabError> {
+    use entities::property::{Column, Entity};
+    use sea_orm::sea_query::OnConflict;
+
     let now = Utc::now().timestamp();
     let json = serde_json::to_string(value)?;
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO properties (owner, key, value, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(owner, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"#,
-        [owner.into(), key.into(), json.into(), now.into()],
-    ))
-    .await?;
+
+    let property = entities::property::ActiveModel {
+        owner: Set(owner.to_string()),
+        key: Set(key.to_string()),
+        value: Set(json.clone()),
+        updated_at: Set(now),
+    };
+
+    Entity::insert(property)
+        .on_conflict(
+            OnConflict::columns([Column::Owner, Column::Key])
+                .update_columns([Column::Value, Column::UpdatedAt])
+                .to_owned(),
+        )
+        .exec(db)
+        .await?;
+
     Ok(())
 }
 
@@ -294,21 +348,21 @@ pub async fn get_client(
     db: &DatabaseConnection,
     client_id: &str,
 ) -> Result<Option<Client>, CrabError> {
-    if let Some(row) = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"SELECT client_id, client_secret, client_name, redirect_uris, created_at FROM clients WHERE client_id = ?"#,
-            [client_id.into()],
-        ))
+    use entities::client::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::ClientId.eq(client_id))
+        .one(db)
         .await?
     {
-        let client_id: String = row.try_get("", "client_id").unwrap_or_default();
-        let client_secret: String = row.try_get("", "client_secret").unwrap_or_default();
-        let client_name: Option<String> = row.try_get("", "client_name").ok();
-        let redirect_uris_json: String = row.try_get("", "redirect_uris").unwrap_or_default();
-        let redirect_uris: Vec<String> = serde_json::from_str(&redirect_uris_json).unwrap_or_default();
-        let created_at: i64 = row.try_get("", "created_at").unwrap_or_default();
-        Ok(Some(Client { client_id, client_secret, client_name, redirect_uris, created_at }))
+        let redirect_uris: Vec<String> = serde_json::from_str(&model.redirect_uris)?;
+        Ok(Some(Client {
+            client_id: model.client_id,
+            client_secret: model.client_secret,
+            client_name: model.client_name,
+            redirect_uris,
+            created_at: model.created_at,
+        }))
     } else {
         Ok(None)
     }
@@ -329,25 +383,24 @@ pub async fn issue_auth_code(
     let code = random_id();
     let now = Utc::now().timestamp();
     let expires_at = now + ttl_secs;
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO auth_codes (code, client_id, redirect_uri, scope, subject, nonce, code_challenge, code_challenge_method, created_at, expires_at, consumed, auth_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"#,
-        [
-            code.clone().into(),
-            client_id.into(),
-            redirect_uri.into(),
-            scope.into(),
-            subject.into(),
-            nonce.clone().into(),
-            code_challenge.into(),
-            code_challenge_method.into(),
-            now.into(),
-            expires_at.into(),
-            auth_time.into(),
-        ],
-    ))
-    .await?;
+
+    let auth_code = entities::auth_code::ActiveModel {
+        code: Set(code.clone()),
+        client_id: Set(client_id.to_string()),
+        redirect_uri: Set(redirect_uri.to_string()),
+        scope: Set(scope.to_string()),
+        subject: Set(subject.to_string()),
+        nonce: Set(nonce.clone()),
+        code_challenge: Set(code_challenge.to_string()),
+        code_challenge_method: Set(code_challenge_method.to_string()),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+        consumed: Set(0),
+        auth_time: Set(auth_time),
+    };
+
+    auth_code.insert(db).await?;
+
     Ok(AuthCode {
         code,
         client_id: client_id.to_string(),
@@ -368,42 +421,37 @@ pub async fn consume_auth_code(
     db: &DatabaseConnection,
     code: &str,
 ) -> Result<Option<AuthCode>, CrabError> {
-    if let Some(row) = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"SELECT code, client_id, redirect_uri, scope, subject, nonce, code_challenge, code_challenge_method, created_at, expires_at, consumed, auth_time
-               FROM auth_codes WHERE code = ?"#,
-            [code.into()],
-        ))
+    use entities::auth_code::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::Code.eq(code))
+        .one(db)
         .await?
     {
-        let consumed: i64 = row.try_get("", "consumed").unwrap_or_default();
-        let expires_at: i64 = row.try_get("", "expires_at").unwrap_or_default();
         let now = Utc::now().timestamp();
-        if consumed != 0 || now > expires_at {
+        if model.consumed != 0 || now > model.expires_at {
             return Ok(None);
         }
 
         // Mark as consumed
-        db.execute(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"UPDATE auth_codes SET consumed = ? WHERE code = ?"#,
-            [1.into(), code.into()],
-        ))
-        .await?;
+        let mut active_model: entities::auth_code::ActiveModel = model.clone().into();
+        active_model.consumed = Set(1);
+        active_model.update(db).await?;
 
-        let code_val: String = row.try_get("", "code").unwrap_or_default();
-        let client_id: String = row.try_get("", "client_id").unwrap_or_default();
-        let redirect_uri: String = row.try_get("", "redirect_uri").unwrap_or_default();
-        let scope: String = row.try_get("", "scope").unwrap_or_default();
-        let subject: String = row.try_get("", "subject").unwrap_or_default();
-        let nonce: Option<String> = row.try_get("", "nonce").ok();
-        let code_challenge: String = row.try_get("", "code_challenge").unwrap_or_default();
-        let code_challenge_method: String = row.try_get("", "code_challenge_method").unwrap_or_default();
-        let created_at: i64 = row.try_get("", "created_at").unwrap_or_default();
-        let expires_at: i64 = row.try_get("", "expires_at").unwrap_or_default();
-        let auth_time: Option<i64> = row.try_get("", "auth_time").ok();
-        Ok(Some(AuthCode { code: code_val, client_id, redirect_uri, scope, subject, nonce, code_challenge, code_challenge_method, created_at, expires_at, consumed: 1, auth_time }))
+        Ok(Some(AuthCode {
+            code: model.code,
+            client_id: model.client_id,
+            redirect_uri: model.redirect_uri,
+            scope: model.scope,
+            subject: model.subject,
+            nonce: model.nonce,
+            code_challenge: model.code_challenge,
+            code_challenge_method: model.code_challenge_method,
+            created_at: model.created_at,
+            expires_at: model.expires_at,
+            consumed: 1,
+            auth_time: model.auth_time,
+        }))
     } else {
         Ok(None)
     }
@@ -419,13 +467,19 @@ pub async fn issue_access_token(
     let token = random_id();
     let now = Utc::now().timestamp();
     let expires_at = now + ttl_secs;
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO access_tokens (token, client_id, subject, scope, created_at, expires_at, revoked)
-           VALUES (?, ?, ?, ?, ?, ?, 0)"#,
-        [token.clone().into(), client_id.into(), subject.into(), scope.into(), now.into(), expires_at.into()],
-    ))
-    .await?;
+
+    let access_token = entities::access_token::ActiveModel {
+        token: Set(token.clone()),
+        client_id: Set(client_id.to_string()),
+        subject: Set(subject.to_string()),
+        scope: Set(scope.to_string()),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+        revoked: Set(0),
+    };
+
+    access_token.insert(db).await?;
+
     Ok(AccessToken {
         token,
         client_id: client_id.to_string(),
@@ -441,24 +495,27 @@ pub async fn get_access_token(
     db: &DatabaseConnection,
     token: &str,
 ) -> Result<Option<AccessToken>, CrabError> {
-    if let Some(row) = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"SELECT token, client_id, subject, scope, created_at, expires_at, revoked FROM access_tokens WHERE token = ?"#,
-            [token.into()],
-        ))
+    use entities::access_token::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::Token.eq(token))
+        .one(db)
         .await?
     {
-        let revoked: i64 = row.try_get("", "revoked").unwrap_or_default();
-        let expires_at: i64 = row.try_get("", "expires_at").unwrap_or_default();
         let now = Utc::now().timestamp();
-        if revoked != 0 || now > expires_at { return Ok(None); }
-        let token: String = row.try_get("", "token").unwrap_or_default();
-        let client_id: String = row.try_get("", "client_id").unwrap_or_default();
-        let subject: String = row.try_get("", "subject").unwrap_or_default();
-        let scope: String = row.try_get("", "scope").unwrap_or_default();
-        let created_at: i64 = row.try_get("", "created_at").unwrap_or_default();
-        Ok(Some(AccessToken { token, client_id, subject, scope, created_at, expires_at, revoked }))
+        if model.revoked != 0 || now > model.expires_at {
+            return Ok(None);
+        }
+
+        Ok(Some(AccessToken {
+            token: model.token,
+            client_id: model.client_id,
+            subject: model.subject,
+            scope: model.scope,
+            created_at: model.created_at,
+            expires_at: model.expires_at,
+            revoked: model.revoked,
+        }))
     } else {
         Ok(None)
     }
@@ -492,19 +549,17 @@ pub async fn create_user(
         .map_err(|e| CrabError::Other(format!("Password hashing failed: {}", e)))?
         .to_string();
 
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO users (subject, username, password_hash, email, email_verified, created_at, enabled)
-           VALUES (?, ?, ?, ?, 0, ?, 1)"#,
-        [
-            subject.clone().into(),
-            username.into(),
-            password_hash.clone().into(),
-            email.clone().into(),
-            created_at.into(),
-        ],
-    ))
-    .await?;
+    let user = entities::user::ActiveModel {
+        subject: Set(subject.clone()),
+        username: Set(username.to_string()),
+        password_hash: Set(password_hash.clone()),
+        email: Set(email.clone()),
+        email_verified: Set(0),
+        created_at: Set(created_at),
+        enabled: Set(1),
+    };
+
+    user.insert(db).await?;
 
     Ok(User {
         subject,
@@ -521,31 +576,21 @@ pub async fn get_user_by_username(
     db: &DatabaseConnection,
     username: &str,
 ) -> Result<Option<User>, CrabError> {
-    if let Some(row) = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"SELECT subject, username, password_hash, email, email_verified, created_at, enabled
-               FROM users WHERE username = ?"#,
-            [username.into()],
-        ))
+    use entities::user::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::Username.eq(username))
+        .one(db)
         .await?
     {
-        let subject: String = row.try_get("", "subject").unwrap_or_default();
-        let username: String = row.try_get("", "username").unwrap_or_default();
-        let password_hash: String = row.try_get("", "password_hash").unwrap_or_default();
-        let email: Option<String> = row.try_get("", "email").ok();
-        let email_verified: i64 = row.try_get("", "email_verified").unwrap_or_default();
-        let created_at: i64 = row.try_get("", "created_at").unwrap_or_default();
-        let enabled: i64 = row.try_get("", "enabled").unwrap_or_default();
-
         Ok(Some(User {
-            subject,
-            username,
-            password_hash,
-            email,
-            email_verified,
-            created_at,
-            enabled,
+            subject: model.subject,
+            username: model.username,
+            password_hash: model.password_hash,
+            email: model.email,
+            email_verified: model.email_verified,
+            created_at: model.created_at,
+            enabled: model.enabled,
         }))
     } else {
         Ok(None)
@@ -577,6 +622,54 @@ pub async fn verify_user_password(
     }
 }
 
+/// Update user enabled and email_verified flags
+pub async fn update_user(
+    db: &DatabaseConnection,
+    username: &str,
+    enabled: bool,
+    email_verified: bool,
+) -> Result<(), CrabError> {
+    use entities::user::{Column, Entity};
+
+    // Find the user
+    let user = Entity::find()
+        .filter(Column::Username.eq(username))
+        .one(db)
+        .await?
+        .ok_or_else(|| CrabError::Other(format!("User not found: {}", username)))?;
+
+    // Update the user
+    let mut active: entities::user::ActiveModel = user.into();
+    active.enabled = Set(if enabled { 1 } else { 0 });
+    active.email_verified = Set(if email_verified { 1 } else { 0 });
+    active.update(db).await?;
+
+    Ok(())
+}
+
+/// Update user email
+pub async fn update_user_email(
+    db: &DatabaseConnection,
+    username: &str,
+    email: Option<String>,
+) -> Result<(), CrabError> {
+    use entities::user::{Column, Entity};
+
+    // Find the user
+    let user = Entity::find()
+        .filter(Column::Username.eq(username))
+        .one(db)
+        .await?
+        .ok_or_else(|| CrabError::Other(format!("User not found: {}", username)))?;
+
+    // Update the user
+    let mut active: entities::user::ActiveModel = user.into();
+    active.email = Set(email);
+    active.update(db).await?;
+
+    Ok(())
+}
+
 // Session management functions
 
 pub async fn create_session(
@@ -590,21 +683,17 @@ pub async fn create_session(
     let now = Utc::now().timestamp();
     let expires_at = now + ttl_secs;
 
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO sessions (session_id, subject, auth_time, created_at, expires_at, user_agent, ip_address)
-           VALUES (?, ?, ?, ?, ?, ?, ?)"#,
-        [
-            session_id.clone().into(),
-            subject.into(),
-            now.into(),
-            now.into(),
-            expires_at.into(),
-            user_agent.clone().into(),
-            ip_address.clone().into(),
-        ],
-    ))
-    .await?;
+    let session = entities::session::ActiveModel {
+        session_id: Set(session_id.clone()),
+        subject: Set(subject.to_string()),
+        auth_time: Set(now),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+        user_agent: Set(user_agent.clone()),
+        ip_address: Set(ip_address.clone()),
+    };
+
+    session.insert(db).await?;
 
     Ok(Session {
         session_id,
@@ -621,37 +710,27 @@ pub async fn get_session(
     db: &DatabaseConnection,
     session_id: &str,
 ) -> Result<Option<Session>, CrabError> {
-    if let Some(row) = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"SELECT session_id, subject, auth_time, created_at, expires_at, user_agent, ip_address
-               FROM sessions WHERE session_id = ?"#,
-            [session_id.into()],
-        ))
+    use entities::session::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::SessionId.eq(session_id))
+        .one(db)
         .await?
     {
-        let session_id: String = row.try_get("", "session_id").unwrap_or_default();
-        let subject: String = row.try_get("", "subject").unwrap_or_default();
-        let auth_time: i64 = row.try_get("", "auth_time").unwrap_or_default();
-        let created_at: i64 = row.try_get("", "created_at").unwrap_or_default();
-        let expires_at: i64 = row.try_get("", "expires_at").unwrap_or_default();
-        let user_agent: Option<String> = row.try_get("", "user_agent").ok();
-        let ip_address: Option<String> = row.try_get("", "ip_address").ok();
-
         // Check if session is expired
         let now = Utc::now().timestamp();
-        if now > expires_at {
+        if now > model.expires_at {
             return Ok(None);
         }
 
         Ok(Some(Session {
-            session_id,
-            subject,
-            auth_time,
-            created_at,
-            expires_at,
-            user_agent,
-            ip_address,
+            session_id: model.session_id,
+            subject: model.subject,
+            auth_time: model.auth_time,
+            created_at: model.created_at,
+            expires_at: model.expires_at,
+            user_agent: model.user_agent,
+            ip_address: model.ip_address,
         }))
     } else {
         Ok(None)
@@ -659,25 +738,26 @@ pub async fn get_session(
 }
 
 pub async fn delete_session(db: &DatabaseConnection, session_id: &str) -> Result<(), CrabError> {
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        "DELETE FROM sessions WHERE session_id = ?",
-        [session_id.into()],
-    ))
-    .await?;
+    use entities::session::{Column, Entity};
+
+    Entity::delete_many()
+        .filter(Column::SessionId.eq(session_id))
+        .exec(db)
+        .await?;
+
     Ok(())
 }
 
 pub async fn cleanup_expired_sessions(db: &DatabaseConnection) -> Result<u64, CrabError> {
+    use entities::session::{Column, Entity};
+
     let now = Utc::now().timestamp();
-    let result = db
-        .execute(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "DELETE FROM sessions WHERE expires_at < ?",
-            [now.into()],
-        ))
+    let result = Entity::delete_many()
+        .filter(Column::ExpiresAt.lt(now))
+        .exec(db)
         .await?;
-    Ok(result.rows_affected())
+
+    Ok(result.rows_affected)
 }
 
 // Refresh Token Functions
@@ -694,21 +774,18 @@ pub async fn issue_refresh_token(
     let now = Utc::now().timestamp();
     let expires_at = now + ttl_secs;
 
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        r#"INSERT INTO refresh_tokens (token, client_id, subject, scope, created_at, expires_at, revoked, parent_token)
-           VALUES (?, ?, ?, ?, ?, ?, 0, ?)"#,
-        [
-            token.clone().into(),
-            client_id.into(),
-            subject.into(),
-            scope.into(),
-            now.into(),
-            expires_at.into(),
-            parent_token.clone().into(),
-        ],
-    ))
-    .await?;
+    let refresh_token = entities::refresh_token::ActiveModel {
+        token: Set(token.clone()),
+        client_id: Set(client_id.to_string()),
+        subject: Set(subject.to_string()),
+        scope: Set(scope.to_string()),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+        revoked: Set(0),
+        parent_token: Set(parent_token.clone()),
+    };
+
+    refresh_token.insert(db).await?;
 
     Ok(RefreshToken {
         token,
@@ -726,40 +803,28 @@ pub async fn get_refresh_token(
     db: &DatabaseConnection,
     token: &str,
 ) -> Result<Option<RefreshToken>, CrabError> {
-    let result = db
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            r#"SELECT token, client_id, subject, scope, created_at, expires_at, revoked, parent_token
-               FROM refresh_tokens WHERE token = ?"#,
-            [token.into()],
-        ))
-        .await?;
+    use entities::refresh_token::{Column, Entity};
 
-    if let Some(row) = result {
-        let token: String = row.try_get("", "token")?;
-        let client_id: String = row.try_get("", "client_id")?;
-        let subject: String = row.try_get("", "subject")?;
-        let scope: String = row.try_get("", "scope")?;
-        let created_at: i64 = row.try_get("", "created_at")?;
-        let expires_at: i64 = row.try_get("", "expires_at")?;
-        let revoked: i64 = row.try_get("", "revoked")?;
-        let parent_token: Option<String> = row.try_get("", "parent_token").ok();
-
+    if let Some(model) = Entity::find()
+        .filter(Column::Token.eq(token))
+        .one(db)
+        .await?
+    {
         // Check if token is expired or revoked
         let now = Utc::now().timestamp();
-        if revoked != 0 || now > expires_at {
+        if model.revoked != 0 || now > model.expires_at {
             return Ok(None);
         }
 
         Ok(Some(RefreshToken {
-            token,
-            client_id,
-            subject,
-            scope,
-            created_at,
-            expires_at,
-            revoked,
-            parent_token,
+            token: model.token,
+            client_id: model.client_id,
+            subject: model.subject,
+            scope: model.scope,
+            created_at: model.created_at,
+            expires_at: model.expires_at,
+            revoked: model.revoked,
+            parent_token: model.parent_token,
         }))
     } else {
         Ok(None)
@@ -767,12 +832,19 @@ pub async fn get_refresh_token(
 }
 
 pub async fn revoke_refresh_token(db: &DatabaseConnection, token: &str) -> Result<(), CrabError> {
-    db.execute(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        "UPDATE refresh_tokens SET revoked = 1 WHERE token = ?",
-        [token.into()],
-    ))
-    .await?;
+    use entities::refresh_token::{Column, Entity};
+
+    // Find the token and update it
+    if let Some(model) = Entity::find()
+        .filter(Column::Token.eq(token))
+        .one(db)
+        .await?
+    {
+        let mut active_model: entities::refresh_token::ActiveModel = model.into();
+        active_model.revoked = Set(1);
+        active_model.update(db).await?;
+    }
+
     Ok(())
 }
 
@@ -800,13 +872,13 @@ pub async fn rotate_refresh_token(
 }
 
 pub async fn cleanup_expired_refresh_tokens(db: &DatabaseConnection) -> Result<u64, CrabError> {
+    use entities::refresh_token::{Column, Entity};
+
     let now = Utc::now().timestamp();
-    let result = db
-        .execute(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "DELETE FROM refresh_tokens WHERE expires_at < ?",
-            [now.into()],
-        ))
+    let result = Entity::delete_many()
+        .filter(Column::ExpiresAt.lt(now))
+        .exec(db)
         .await?;
-    Ok(result.rows_affected())
+
+    Ok(result.rows_affected)
 }

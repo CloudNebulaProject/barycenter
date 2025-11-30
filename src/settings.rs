@@ -16,11 +16,23 @@ pub struct Server {
     pub port: u16,
     /// If set, this is used as the issuer/public base URL, e.g., https://idp.example.com
     pub public_base_url: Option<String>,
+    /// Enable public user registration. If false, only admin API can create users.
+    #[serde(default = "default_allow_public_registration")]
+    pub allow_public_registration: bool,
+    /// Admin GraphQL API port (defaults to port + 1)
+    pub admin_port: Option<u16>,
+}
+
+fn default_allow_public_registration() -> bool {
+    false // Secure by default - registration disabled
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Database {
-    /// SeaORM/SQLx connection string, e.g., sqlite://barycenter.db?mode=rwc
+    /// SeaORM/SQLx connection string
+    /// Examples:
+    /// - SQLite: sqlite://barycenter.db?mode=rwc
+    /// - PostgreSQL: postgresql://user:password@localhost/barycenter
     pub url: String,
 }
 
@@ -48,6 +60,8 @@ impl Default for Server {
             host: "0.0.0.0".to_string(),
             port: 8080,
             public_base_url: None,
+            allow_public_registration: false,
+            admin_port: None, // Defaults to port + 1 if not set
         }
     }
 }

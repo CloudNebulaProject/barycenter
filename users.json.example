@@ -1,0 +1,55 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "email": "admin@example.com",
+      "password": "change-me-in-production",
+      "enabled": true,
+      "email_verified": true,
+      "properties": {
+        "department": "IT",
+        "role": "administrator",
+        "display_name": "System Administrator"
+      }
+    },
+    {
+      "username": "alice",
+      "email": "alice@example.com",
+      "password": "alice-secure-password",
+      "enabled": true,
+      "email_verified": false,
+      "properties": {
+        "department": "Engineering",
+        "role": "developer",
+        "display_name": "Alice Johnson",
+        "team": "Platform"
+      }
+    },
+    {
+      "username": "bob",
+      "email": "bob@example.com",
+      "password": "bob-secure-password",
+      "enabled": true,
+      "email_verified": true,
+      "properties": {
+        "department": "Product",
+        "role": "product_manager",
+        "display_name": "Bob Smith"
+      }
+    },
+    {
+      "username": "charlie",
+      "email": "charlie@example.com",
+      "password": "charlie-secure-password",
+      "enabled": false,
+      "email_verified": false,
+      "properties": {
+        "department": "Engineering",
+        "role": "developer",
+        "display_name": "Charlie Brown",
+        "team": "Backend",
+        "note": "Account disabled - pending onboarding"
+      }
+    }
+  ]
+}
