@@ -153,3 +153,24 @@ readinessProbe:
   periodSeconds: 10
   timeoutSeconds: 3
   failureThreshold: 3
+
+# User synchronization from JSON file
+userSync:
+  # Enable user sync init container
+  enabled: false
+
+  # Name of existing secret containing users.json
+  existingSecret: ""
+  # Example: barycenter-users
+
+  # Secret key containing the users.json file
+  secretKey: "users.json"
+
+  # Init container resources
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
