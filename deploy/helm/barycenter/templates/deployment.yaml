@@ -39,6 +39,8 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         command:
           - barycenter
+          - -c
+          - /app/config/config.toml
           - sync-users
           - --file
           - /secrets/{{ .Values.userSync.secretKey }}
@@ -65,6 +67,7 @@ spec:
           {{- toYaml .Values.securityContext | nindent 12 }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["-c", "/app/config/config.toml"]
         ports:
         - name: http
           containerPort: {{ .Values.config.server.port }}
