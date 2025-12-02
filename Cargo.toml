@@ -25,6 +25,8 @@ serde_with = "3"
 
 # SeaORM for SQLite and PostgreSQL
 sea-orm = { version = "1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros"] }
+sea-orm-migration = { version = "1", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
+migration = { path = "migration" }
 
 # JOSE / JWKS & JWT
 josekit = "0.10"

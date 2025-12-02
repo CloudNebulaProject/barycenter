@@ -12,6 +12,7 @@ mod web;
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
+use sea_orm_migration::MigratorTrait;
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser, Debug)]
@@ -53,6 +54,10 @@ async fn main() -> Result<()> {
 
     // init storage (database)
     let db = storage::init(&settings.database).await?;
+
+    // run migrations
+    migration::Migrator::up(&db, None).await.into_diagnostic()?;
+    tracing::info!("Database migrations applied successfully");
 
     // Handle subcommands
     match cli.command {
