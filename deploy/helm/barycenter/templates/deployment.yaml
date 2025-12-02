@@ -47,6 +47,9 @@ spec:
         env:
         - name: RUST_LOG
           value: "info"
+        {{- if .Values.userSync.env }}
+        {{- toYaml .Values.userSync.env | nindent 8 }}
+        {{- end }}
         volumeMounts:
         - name: config
           mountPath: /app/config
@@ -72,10 +75,9 @@ spec:
         - name: http
           containerPort: {{ .Values.config.server.port }}
           protocol: TCP
+        {{- if .Values.env }}
         env:
-        {{- range .Values.env }}
-        - name: {{ .name }}
-          value: {{ .value | quote }}
+          {{- toYaml .Values.env | nindent 8 }}
         {{- end }}
         volumeMounts:
         - name: config

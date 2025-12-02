@@ -118,13 +118,41 @@ config:
   federation:
     trustAnchors: []
 
-# Environment variables
+# Environment variables for main container
+# Supports full Kubernetes env var specification including valueFrom
 env:
   - name: RUST_LOG
     value: "info"
-  # Add additional environment variables here
+  # Simple value example:
   # - name: BARYCENTER__SERVER__PUBLIC_BASE_URL
   #   value: "https://idp.example.com"
+  #
+  # ValueFrom secret example:
+  # - name: BARYCENTER__DATABASE__URL
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: barycenter-db-secret
+  #       key: database-url
+  #
+  # ValueFrom configMap example:
+  # - name: CONFIG_VALUE
+  #   valueFrom:
+  #     configMapKeyRef:
+  #       name: app-config
+  #       key: some-value
+  #
+  # Field reference example:
+  # - name: POD_NAME
+  #   valueFrom:
+  #     fieldRef:
+  #       fieldPath: metadata.name
+  #
+  # Resource limits example:
+  # - name: MEMORY_LIMIT
+  #   valueFrom:
+  #     resourceFieldRef:
+  #       containerName: barycenter
+  #       resource: limits.memory
 
 # Persistence for database and keys
 persistence:
@@ -165,6 +193,19 @@ userSync:
 
   # Secret key containing the users.json file
   secretKey: "users.json"
+
+  # Additional environment variables for user-sync init container
+  # Supports full Kubernetes env var specification (same as main container)
+  # RUST_LOG is already set to "info" by default
+  env: []
+  # Examples:
+  # - name: CUSTOM_VAR
+  #   value: "custom-value"
+  # - name: SECRET_VALUE
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: my-secret
+  #       key: secret-key
 
   # Init container resources
   resources:
