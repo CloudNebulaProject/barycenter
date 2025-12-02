@@ -9,6 +9,7 @@ COPY Cargo.toml Cargo.lock ./
 
 # Copy source code
 COPY src ./src
+COPY migration ./migration
 
 # Build release binary with platform-specific caches to avoid race conditions
 ARG TARGETPLATFORM
