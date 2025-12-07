@@ -13,6 +13,8 @@ pub struct Model {
     pub email_verified: i64,
     pub created_at: i64,
     pub enabled: i64,
+    pub requires_2fa: i64,
+    pub passkey_enrolled_at: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

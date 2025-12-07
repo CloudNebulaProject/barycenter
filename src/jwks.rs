@@ -88,3 +88,219 @@ fn random_kid() -> String {
     rand::thread_rng().fill_bytes(&mut bytes);
     base64ct::Base64UrlUnpadded::encode_string(&bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::path::PathBuf;
+
+    /// Helper to create test Keys config
+    fn test_keys_config(temp_dir: &TempDir) -> Keys {
+        Keys {
+            jwks_path: temp_dir.path().join("jwks.json"),
+            private_key_path: temp_dir.path().join("private_key.json"),
+            alg: "RS256".to_string(),
+            key_id: Some("test-kid-123".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_jwks_manager_generates_key() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        let manager = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create JwksManager");
+
+        let private_jwk = manager.private_jwk();
+
+        // Verify it's RSA key
+        assert_eq!(private_jwk.key_type(), "RSA");
+        assert_eq!(private_jwk.algorithm(), Some("RS256"));
+        assert_eq!(private_jwk.key_use(), Some("sig"));
+        assert_eq!(private_jwk.key_id(), Some("test-kid-123"));
+
+        // Verify 2048-bit key (check modulus size)
+        if let Some(n) = private_jwk.parameter("n") {
+            if let Some(n_str) = n.as_str() {
+                let decoded = base64ct::Base64UrlUnpadded::decode_vec(n_str)
+                    .expect("Failed to decode modulus");
+                // 2048-bit key = 256 bytes modulus
+                assert_eq!(decoded.len(), 256);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_jwks_manager_persists_private_key() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        let _manager = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create JwksManager");
+
+        // Verify private key file exists
+        assert!(cfg.private_key_path.exists());
+
+        // Verify it contains valid JSON JWK
+        let content = fs::read_to_string(&cfg.private_key_path)
+            .expect("Failed to read private key");
+        let jwk: Jwk = serde_json::from_str(&content)
+            .expect("Failed to parse private key JSON");
+
+        assert_eq!(jwk.key_type(), "RSA");
+        assert!(jwk.parameter("d").is_some()); // Private exponent exists
+    }
+
+    #[tokio::test]
+    async fn test_jwks_manager_persists_jwks() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        let _manager = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create JwksManager");
+
+        // Verify JWKS file exists
+        assert!(cfg.jwks_path.exists());
+
+        // Verify it contains valid JWKS structure
+        let content = fs::read_to_string(&cfg.jwks_path)
+            .expect("Failed to read JWKS");
+        let jwks: Value = serde_json::from_str(&content)
+            .expect("Failed to parse JWKS JSON");
+
+        assert!(jwks.get("keys").is_some());
+        assert!(jwks["keys"].is_array());
+        assert_eq!(jwks["keys"].as_array().unwrap().len(), 1);
+
+        // Verify public key (should not have private parameters)
+        let public_key = &jwks["keys"][0];
+        assert!(public_key.get("n").is_some()); // Modulus
+        assert!(public_key.get("e").is_some()); // Exponent
+        assert!(public_key.get("d").is_none()); // No private exponent
+    }
+
+    #[tokio::test]
+    async fn test_jwks_manager_loads_existing() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        // Create first manager
+        let manager1 = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create first JwksManager");
+
+        let kid1 = manager1.private_jwk().key_id().unwrap().to_string();
+
+        // Create second manager - should reuse the same key
+        let manager2 = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create second JwksManager");
+
+        let kid2 = manager2.private_jwk().key_id().unwrap().to_string();
+
+        // Verify same key was loaded
+        assert_eq!(kid1, kid2);
+
+        // Verify modulus is identical (same key)
+        let jwk1 = manager1.private_jwk();
+        let jwk2 = manager2.private_jwk();
+
+        assert_eq!(
+            jwk1.parameter("n"),
+            jwk2.parameter("n")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sign_jwt_rs256() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        let manager = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create JwksManager");
+
+        // Create a test payload
+        let mut payload = JwtPayload::new();
+        payload.set_issuer("https://example.com");
+        payload.set_subject("user123");
+        payload.set_expires_at(&(chrono::Utc::now() + chrono::Duration::hours(1)));
+
+        // Sign the JWT
+        let token = manager.sign_jwt_rs256(&payload)
+            .expect("Failed to sign JWT");
+
+        // Verify token is not empty and has 3 parts (header.payload.signature)
+        assert!(!token.is_empty());
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+
+        // Decode and verify header contains kid
+        let header_json = base64ct::Base64UrlUnpadded::decode_vec(parts[0])
+            .expect("Failed to decode header");
+        let header: Value = serde_json::from_slice(&header_json)
+            .expect("Failed to parse header");
+
+        assert_eq!(header["alg"], "RS256");
+        assert_eq!(header["kid"], "test-kid-123");
+    }
+
+    #[tokio::test]
+    async fn test_jwks_json_format() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        let manager = JwksManager::new(cfg)
+            .await
+            .expect("Failed to create JwksManager");
+
+        let jwks = manager.jwks_json();
+
+        // Verify JWKS structure
+        assert!(jwks.is_object());
+        assert!(jwks.get("keys").is_some());
+        assert!(jwks["keys"].is_array());
+
+        let keys = jwks["keys"].as_array().unwrap();
+        assert_eq!(keys.len(), 1);
+
+        // Verify first key structure
+        let key = &keys[0];
+        assert_eq!(key["kty"], "RSA");
+        assert_eq!(key["use"], "sig");
+        assert_eq!(key["alg"], "RS256");
+        assert_eq!(key["kid"], "test-kid-123");
+        assert!(key.get("n").is_some());
+        assert!(key.get("e").is_some());
+        assert!(key.get("d").is_none()); // Public key only
+    }
+
+    #[test]
+    fn test_random_kid_uniqueness() {
+        // Generate multiple kids
+        let kid1 = random_kid();
+        let kid2 = random_kid();
+        let kid3 = random_kid();
+
+        // Verify they're all different
+        assert_ne!(kid1, kid2);
+        assert_ne!(kid2, kid3);
+        assert_ne!(kid1, kid3);
+
+        // Verify length (16 bytes base64url-encoded)
+        // 16 bytes = 128 bits, base64url without padding is 22 chars
+        assert_eq!(kid1.len(), 22);
+        assert_eq!(kid2.len(), 22);
+        assert_eq!(kid3.len(), 22);
+
+        // Verify all are valid base64url
+        for kid in [kid1, kid2, kid3] {
+            assert!(kid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        }
+    }
+}

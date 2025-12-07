@@ -3,6 +3,8 @@ host = "0.0.0.0"
 port = 8080
 # Uncomment for production with HTTPS:
 # public_base_url = "https://idp.example.com"
+# For development/testing with WebAuthn, use:
+# public_base_url = "http://localhost:8080"
 
 [database]
 url = "sqlite://barycenter.db?mode=rwc"

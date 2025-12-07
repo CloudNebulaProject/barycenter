@@ -1,15 +1,4 @@
-mod admin_graphql;
-mod admin_mutations;
-mod entities;
-mod errors;
-mod jobs;
-mod jwks;
-mod session;
-mod settings;
-mod storage;
-mod user_sync;
-mod web;
-
+use barycenter::*;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
 use sea_orm_migration::MigratorTrait;
@@ -75,6 +64,13 @@ async fn main() -> Result<()> {
             // init jwks (generate if missing)
             let jwks_mgr = jwks::JwksManager::new(settings.keys.clone()).await?;
 
+            // init webauthn manager
+            let issuer_url = url::Url::parse(&settings.issuer()).into_diagnostic()?;
+            let rp_id = issuer_url
+                .host_str()
+                .ok_or_else(|| miette::miette!("Invalid issuer URL: missing host"))?;
+            let webauthn_mgr = webauthn_manager::WebAuthnManager::new(rp_id, &issuer_url).await?;
+
             // build admin GraphQL schemas
             let seaography_schema = admin_graphql::build_seaography_schema(db.clone());
             let jobs_schema = admin_graphql::build_jobs_schema(db.clone());
@@ -83,7 +79,15 @@ async fn main() -> Result<()> {
             let _scheduler = jobs::init_scheduler(db.clone()).await?;
 
             // start web server (includes both public and admin servers)
-            web::serve(settings, db, jwks_mgr, seaography_schema, jobs_schema).await?;
+            web::serve(
+                settings,
+                db,
+                jwks_mgr,
+                webauthn_mgr,
+                seaography_schema,
+                jobs_schema,
+            )
+            .await?;
         }
     }
 

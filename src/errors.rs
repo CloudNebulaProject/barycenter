@@ -23,6 +23,20 @@ pub enum CrabError {
     #[diagnostic(code(barycenter::jose))]
     Jose(String),
 
+    #[error("WebAuthn error: {0}")]
+    #[diagnostic(
+        code(barycenter::webauthn),
+        help("Check passkey configuration and client response format")
+    )]
+    WebAuthnError(String),
+
+    #[error("Configuration error: {0}")]
+    #[diagnostic(
+        code(barycenter::configuration),
+        help("Check your configuration settings")
+    )]
+    Configuration(String),
+
     #[error("Bad request: {0}")]
     #[diagnostic(code(barycenter::bad_request))]
     BadRequest(String),

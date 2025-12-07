@@ -21,7 +21,16 @@
       "Bash(gh run view:*)",
       "Bash(cargo fmt:*)",
       "Bash(cargo clippy:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "WebSearch",
+      "Bash(cargo check:*)",
+      "Bash(cat:*)",
+      "Bash(cargo doc:*)",
+      "Bash(grep:*)",
+      "Bash(cargo run:*)",
+      "Bash(wasm-pack build:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

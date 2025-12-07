@@ -1,8 +1,13 @@
 use async_graphql::*;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
+    QueryOrder, QuerySelect, Set,
+};
 use std::sync::Arc;
 
+use crate::entities;
 use crate::jobs;
+use crate::storage;
 
 /// Custom mutations for admin operations
 #[derive(Default)]
@@ -29,6 +34,52 @@ impl AdminMutation {
             }),
         }
     }
+
+    /// Set 2FA requirement for a user (admin-enforced 2FA)
+    async fn set_user_2fa_required(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Username to modify")] username: String,
+        #[graphql(desc = "Whether 2FA should be required")] required: bool,
+    ) -> Result<User2FAResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        // Get user by username
+        let user = storage::get_user_by_username(db.as_ref(), &username)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?
+            .ok_or_else(|| Error::new(format!("User '{}' not found", username)))?;
+
+        // Update requires_2fa flag
+        use crate::entities::user::{Column, Entity};
+        let user_entity = Entity::find()
+            .filter(Column::Subject.eq(&user.subject))
+            .one(db.as_ref())
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?
+            .ok_or_else(|| Error::new("User entity not found"))?;
+
+        let mut active: entities::user::ActiveModel = user_entity.into_active_model();
+        active.requires_2fa = Set(if required { 1 } else { 0 });
+
+        active
+            .update(db.as_ref())
+            .await
+            .map_err(|e| Error::new(format!("Failed to update user: {}", e)))?;
+
+        Ok(User2FAResult {
+            success: true,
+            message: format!(
+                "2FA requirement {} for user '{}'",
+                if required { "enabled" } else { "disabled" },
+                username
+            ),
+            username,
+            requires_2fa: required,
+        })
+    }
 }
 
 /// Result of triggering a job
@@ -37,6 +88,15 @@ pub struct JobTriggerResult {
     pub success: bool,
     pub message: String,
     pub job_name: String,
+}
+
+/// Result of setting user 2FA requirement
+#[derive(SimpleObject)]
+pub struct User2FAResult {
+    pub success: bool,
+    pub message: String,
+    pub username: String,
+    pub requires_2fa: bool,
 }
 
 /// Custom queries for admin operations
@@ -107,7 +167,43 @@ impl AdminQuery {
                 description: "Clean up expired refresh tokens".to_string(),
                 schedule: "Hourly at :30".to_string(),
             },
+            JobInfo {
+                name: "cleanup_expired_challenges".to_string(),
+                description: "Clean up expired WebAuthn challenges".to_string(),
+                schedule: "Every 5 minutes".to_string(),
+            },
         ])
+    }
+
+    /// Get 2FA status for a user
+    async fn user_2fa_status(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Username to query")] username: String,
+    ) -> Result<User2FAStatus> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        // Get user by username
+        let user = storage::get_user_by_username(db.as_ref(), &username)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?
+            .ok_or_else(|| Error::new(format!("User '{}' not found", username)))?;
+
+        // Get user's passkeys count
+        let passkeys = storage::get_passkeys_by_subject(db.as_ref(), &user.subject)
+            .await
+            .map_err(|e| Error::new(format!("Failed to get passkeys: {}", e)))?;
+
+        Ok(User2FAStatus {
+            username,
+            subject: user.subject,
+            requires_2fa: user.requires_2fa == 1,
+            passkey_enrolled: user.passkey_enrolled_at.is_some(),
+            passkey_count: passkeys.len() as i32,
+            passkey_enrolled_at: user.passkey_enrolled_at,
+        })
     }
 }
 
@@ -129,4 +225,15 @@ pub struct JobInfo {
     pub name: String,
     pub description: String,
     pub schedule: String,
+}
+
+/// User 2FA status information
+#[derive(SimpleObject)]
+pub struct User2FAStatus {
+    pub username: String,
+    pub subject: String,
+    pub requires_2fa: bool,
+    pub passkey_enrolled: bool,
+    pub passkey_count: i32,
+    pub passkey_enrolled_at: Option<i64>,
 }

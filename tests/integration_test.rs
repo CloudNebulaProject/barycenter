@@ -13,7 +13,7 @@ struct TestServer {
 impl TestServer {
     fn start() -> Self {
         let port = 8080;
-        let base_url = format!("http://0.0.0.0:{}", port);
+        let base_url = format!("http://localhost:{}", port);
 
         // Use the pre-built binary from target/debug instead of recompiling with cargo run
         // This avoids compilation timeouts in CI
@@ -35,6 +35,7 @@ impl TestServer {
         let mut process = Command::new(&binary_path)
             .env("RUST_LOG", "error")
             .env("BARYCENTER__SERVER__ALLOW_PUBLIC_REGISTRATION", "true") // Enable registration for tests
+            .env("BARYCENTER__SERVER__PUBLIC_BASE_URL", &base_url) // Set public base URL for WebAuthn
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()

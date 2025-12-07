@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "migration", "client-wasm"]
+
 [package]
 name = "barycenter"
 version = "0.2.0-alpha.15"
@@ -9,6 +12,10 @@ homepage = "https://github.com/CloudNebulaProject/barycenter"
 documentation = "https://github.com/CloudNebulaProject/barycenter/blob/main/README.md"
 keywords = ["openid", "oauth2", "identity", "authentication", "oidc"]
 categories = ["authentication", "web-programming"]
+
+[lib]
+name = "barycenter"
+path = "src/lib.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["json", "form"] }
@@ -31,6 +38,10 @@ migration = { path = "migration" }
 # JOSE / JWKS & JWT
 josekit = "0.10"
 
+# WebAuthn / Passkeys
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
 chrono = { version = "0.4", features = ["serde", "clock"] }
 time = "0.3"
 rand = "0.8"
@@ -45,6 +56,7 @@ argon2 = "0.5"
 # Rate limiting
 tower = "0.5"
 tower_governor = "0.4"
+tower-http = { version = "0.6", features = ["fs"] }
 
 # Validation
 regex = "1"
@@ -57,12 +69,22 @@ async-graphql-axum = "7"
 
 # Background job scheduler
 tokio-cron-scheduler = "0.13"
+bincode = "2.0.1"
 
 [dev-dependencies]
+# Existing OIDC/OAuth testing
 openidconnect = { version = "4", features = ["reqwest-blocking"] }
 oauth2 = "5"
 reqwest = { version = "0.12", features = ["blocking", "json", "cookies"] }
 urlencoding = "2"
+
+# New test utilities
+tempfile = "3"              # Temp SQLite databases for test isolation
+tokio-test = "0.4"          # Async test utilities
+assert_matches = "1"        # Pattern matching assertions
+pretty_assertions = "1"     # Better assertion output with color diffs
+test-log = "0.2"            # Capture tracing logs in tests
+serde_cbor = "0.11"         # CBOR encoding for WebAuthn mocks
 
 [profile.release]
 debug = 1

@@ -376,6 +376,8 @@ pub async fn create_user(
         email_verified: Set(0),
         created_at: Set(created_at),
         enabled: Set(1),
+        requires_2fa: Set(0),
+        passkey_enrolled_at: Set(None),
     };
 
     user.insert(db).await?;
@@ -388,6 +390,8 @@ pub async fn create_user(
         email_verified: 0,
         created_at,
         enabled: 1,
+        requires_2fa: 0,
+        passkey_enrolled_at: None,
     })
 }
 
@@ -700,4 +704,702 @@ pub async fn cleanup_expired_refresh_tokens(db: &DatabaseConnection) -> Result<u
         .await?;
 
     Ok(result.rows_affected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::{Database, DatabaseConnection};
+    use sea_orm_migration::MigratorTrait;
+    use tempfile::NamedTempFile;
+
+    /// Helper to create an in-memory test database
+    async fn test_db() -> DatabaseConnection {
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let db_path = temp_file.path().to_str().expect("Invalid temp file path");
+        let db_url = format!("sqlite://{}?mode=rwc", db_path);
+
+        let db = Database::connect(&db_url)
+            .await
+            .expect("Failed to connect to test database");
+
+        migration::Migrator::up(&db, None)
+            .await
+            .expect("Failed to run migrations");
+
+        db
+    }
+
+    // ============================================================================
+    // Client Operations Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_create_client() {
+        let db = test_db().await;
+
+        let client = create_client(
+            &db,
+            NewClient {
+                client_name: Some("Test Client".to_string()),
+                redirect_uris: vec!["http://localhost:3000/callback".to_string()],
+            },
+        )
+        .await
+        .expect("Failed to create client");
+
+        assert!(!client.client_id.is_empty());
+        assert!(!client.client_secret.is_empty());
+        assert_eq!(client.client_name, Some("Test Client".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_client() {
+        let db = test_db().await;
+
+        let created = create_client(
+            &db,
+            NewClient {
+                client_name: Some("Test Client".to_string()),
+                redirect_uris: vec!["http://localhost:3000/callback".to_string()],
+            },
+        )
+        .await
+        .expect("Failed to create client");
+
+        let retrieved = get_client(&db, &created.client_id)
+            .await
+            .expect("Failed to get client")
+            .expect("Client not found");
+
+        assert_eq!(retrieved.client_id, created.client_id);
+        assert_eq!(retrieved.client_secret, created.client_secret);
+    }
+
+    #[tokio::test]
+    async fn test_get_client_not_found() {
+        let db = test_db().await;
+
+        let result = get_client(&db, "nonexistent_client_id")
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_client_redirect_uris_parsing() {
+        let db = test_db().await;
+
+        let uris = vec![
+            "http://localhost:3000/callback".to_string(),
+            "http://localhost:3000/callback2".to_string(),
+        ];
+
+        let client = create_client(
+            &db,
+            NewClient {
+                client_name: Some("Multi-URI Client".to_string()),
+                redirect_uris: uris.clone(),
+            },
+        )
+        .await
+        .expect("Failed to create client");
+
+        let retrieved = get_client(&db, &client.client_id)
+            .await
+            .expect("Failed to get client")
+            .expect("Client not found");
+
+        let parsed_uris: Vec<String> = serde_json::from_str(&retrieved.redirect_uris)
+            .expect("Failed to parse redirect_uris");
+
+        assert_eq!(parsed_uris, uris);
+    }
+
+    // ============================================================================
+    // Auth Code Operations Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_issue_auth_code() {
+        let db = test_db().await;
+
+        let code = issue_auth_code(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
+            Some("test_nonce"),
+            "http://localhost:3000/callback",
+            Some("challenge_string"),
+            Some("S256"),
+        )
+        .await
+        .expect("Failed to issue auth code");
+
+        assert!(!code.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_consume_auth_code_success() {
+        let db = test_db().await;
+
+        let code = issue_auth_code(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
+            Some("test_nonce"),
+            "http://localhost:3000/callback",
+            Some("challenge_string"),
+            Some("S256"),
+        )
+        .await
+        .expect("Failed to issue auth code");
+
+        let auth_code = consume_auth_code(&db, &code)
+            .await
+            .expect("Failed to consume auth code")
+            .expect("Auth code not found");
+
+        assert_eq!(auth_code.subject, "test_subject");
+        assert_eq!(auth_code.client_id, "test_client_id");
+        assert_eq!(auth_code.scope, "openid profile");
+    }
+
+    #[tokio::test]
+    async fn test_consume_auth_code_already_consumed() {
+        let db = test_db().await;
+
+        let code = issue_auth_code(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
+            None,
+            "http://localhost:3000/callback",
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to issue auth code");
+
+        // First consumption succeeds
+        consume_auth_code(&db, &code)
+            .await
+            .expect("Failed to consume auth code")
+            .expect("Auth code not found");
+
+        // Second consumption returns None
+        let result = consume_auth_code(&db, &code)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_consume_auth_code_expired() {
+        let db = test_db().await;
+
+        let code = issue_auth_code(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
+            None,
+            "http://localhost:3000/callback",
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to issue auth code");
+
+        // Manually expire the code by setting expires_at to past
+        use entities::auth_code::{ActiveModel, Column, Entity};
+        use sea_orm::ActiveValue::Set;
+        use sea_orm::EntityTrait;
+
+        let past_timestamp = chrono::Utc::now().timestamp() - 600; // 10 minutes ago
+
+        Entity::update_many()
+            .col_expr(Column::ExpiresAt, sea_orm::sea_query::Expr::value(past_timestamp))
+            .filter(Column::Code.eq(&code))
+            .exec(&db)
+            .await
+            .expect("Failed to update expiry");
+
+        // Consumption should return None for expired code
+        let result = consume_auth_code(&db, &code)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auth_code_pkce_storage() {
+        let db = test_db().await;
+
+        let code = issue_auth_code(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
+            None,
+            "http://localhost:3000/callback",
+            Some("challenge_string"),
+            Some("S256"),
+        )
+        .await
+        .expect("Failed to issue auth code");
+
+        let auth_code = consume_auth_code(&db, &code)
+            .await
+            .expect("Failed to consume auth code")
+            .expect("Auth code not found");
+
+        assert_eq!(auth_code.code_challenge, Some("challenge_string".to_string()));
+        assert_eq!(auth_code.code_challenge_method, Some("S256".to_string()));
+    }
+
+    // ============================================================================
+    // Token Operations Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_issue_access_token() {
+        let db = test_db().await;
+
+        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile")
+            .await
+            .expect("Failed to issue access token");
+
+        assert!(!token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_access_token_valid() {
+        let db = test_db().await;
+
+        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile")
+            .await
+            .expect("Failed to issue access token");
+
+        let access_token = get_access_token(&db, &token)
+            .await
+            .expect("Failed to get access token")
+            .expect("Access token not found");
+
+        assert_eq!(access_token.subject, "test_subject");
+        assert_eq!(access_token.scope, "openid profile");
+        assert_eq!(access_token.revoked, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_access_token_expired() {
+        let db = test_db().await;
+
+        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile")
+            .await
+            .expect("Failed to issue access token");
+
+        // Manually expire the token
+        use entities::access_token::{Column, Entity};
+        use sea_orm::EntityTrait;
+
+        let past_timestamp = chrono::Utc::now().timestamp() - 7200; // 2 hours ago
+
+        Entity::update_many()
+            .col_expr(Column::ExpiresAt, sea_orm::sea_query::Expr::value(past_timestamp))
+            .filter(Column::Token.eq(&token))
+            .exec(&db)
+            .await
+            .expect("Failed to update expiry");
+
+        // Should return None for expired token
+        let result = get_access_token(&db, &token)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_access_token_revoked() {
+        let db = test_db().await;
+
+        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile")
+            .await
+            .expect("Failed to issue access token");
+
+        // Manually revoke the token
+        use entities::access_token::{Column, Entity};
+        use sea_orm::EntityTrait;
+
+        Entity::update_many()
+            .col_expr(Column::Revoked, sea_orm::sea_query::Expr::value(1))
+            .filter(Column::Token.eq(&token))
+            .exec(&db)
+            .await
+            .expect("Failed to revoke token");
+
+        // Should return None for revoked token
+        let result = get_access_token(&db, &token)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_rotation() {
+        let db = test_db().await;
+
+        // Create initial refresh token
+        let token1 = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile", None)
+            .await
+            .expect("Failed to issue refresh token");
+
+        // Rotate to new token
+        let token2 = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile", Some(&token1))
+            .await
+            .expect("Failed to rotate refresh token");
+
+        // Verify parent chain
+        let rt2 = get_refresh_token(&db, &token2)
+            .await
+            .expect("Failed to get token")
+            .expect("Token not found");
+
+        assert_eq!(rt2.parent_refresh_token, Some(token1));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_refresh_token() {
+        let db = test_db().await;
+
+        let token = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile", None)
+            .await
+            .expect("Failed to issue refresh token");
+
+        revoke_refresh_token(&db, &token)
+            .await
+            .expect("Failed to revoke token");
+
+        // Should return None for revoked token
+        let result = get_refresh_token(&db, &token)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    // ============================================================================
+    // User Management Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_create_user() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        assert!(!user.subject.is_empty());
+        assert_eq!(user.username, "testuser");
+        assert!(!user.password_hash.is_empty());
+        // Verify it's Argon2 hash format
+        assert!(user.password_hash.starts_with("$argon2"));
+    }
+
+    #[tokio::test]
+    async fn test_get_user_by_username() {
+        let db = test_db().await;
+
+        let created = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let retrieved = get_user_by_username(&db, "testuser")
+            .await
+            .expect("Failed to get user")
+            .expect("User not found");
+
+        assert_eq!(retrieved.subject, created.subject);
+        assert_eq!(retrieved.username, "testuser");
+    }
+
+    #[tokio::test]
+    async fn test_verify_user_password_success() {
+        let db = test_db().await;
+
+        create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let user = verify_user_password(&db, "testuser", "password123")
+            .await
+            .expect("Failed to verify password")
+            .expect("Verification failed");
+
+        assert_eq!(user.username, "testuser");
+    }
+
+    #[tokio::test]
+    async fn test_verify_user_password_wrong() {
+        let db = test_db().await;
+
+        create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let result = verify_user_password(&db, "testuser", "wrongpassword")
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_verify_user_password_disabled() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        // Disable the user
+        update_user(&db, &user.subject, false, None, None)
+            .await
+            .expect("Failed to disable user");
+
+        // Verification should fail for disabled user
+        let result = verify_user_password(&db, "testuser", "password123")
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_user() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        update_user(&db, &user.subject, false, Some("test@example.com"), Some(true))
+            .await
+            .expect("Failed to update user");
+
+        let updated = get_user_by_subject(&db, &user.subject)
+            .await
+            .expect("Failed to get user")
+            .expect("User not found");
+
+        assert_eq!(updated.enabled, 0);
+        assert_eq!(updated.email, Some("test@example.com".to_string()));
+        assert_eq!(updated.requires_2fa, 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_user_email() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        update_user(&db, &user.subject, true, Some("new@example.com"), None)
+            .await
+            .expect("Failed to update email");
+
+        let updated = get_user_by_subject(&db, &user.subject)
+            .await
+            .expect("Failed to get user")
+            .expect("User not found");
+
+        assert_eq!(updated.email, Some("new@example.com".to_string()));
+    }
+
+    // ============================================================================
+    // Session Management Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_create_session() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let auth_time = chrono::Utc::now().timestamp();
+        let session = create_session(&db, &user.subject, auth_time, 3600, None, None)
+            .await
+            .expect("Failed to create session");
+
+        assert!(!session.session_id.is_empty());
+        assert_eq!(session.subject, user.subject);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_valid() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let auth_time = chrono::Utc::now().timestamp();
+        let created = create_session(&db, &user.subject, auth_time, 3600, None, None)
+            .await
+            .expect("Failed to create session");
+
+        let retrieved = get_session(&db, &created.session_id)
+            .await
+            .expect("Failed to get session")
+            .expect("Session not found");
+
+        assert_eq!(retrieved.session_id, created.session_id);
+        assert_eq!(retrieved.subject, user.subject);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_expired() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let auth_time = chrono::Utc::now().timestamp() - 7200; // 2 hours ago
+        let session = create_session(&db, &user.subject, auth_time, 3600, None, None) // 1 hour TTL
+            .await
+            .expect("Failed to create session");
+
+        // Should return None for expired session
+        let result = get_session(&db, &session.session_id)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_session() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        let auth_time = chrono::Utc::now().timestamp();
+        let session = create_session(&db, &user.subject, auth_time, 3600, None, None)
+            .await
+            .expect("Failed to create session");
+
+        delete_session(&db, &session.session_id)
+            .await
+            .expect("Failed to delete session");
+
+        let result = get_session(&db, &session.session_id)
+            .await
+            .expect("Query failed");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired_sessions() {
+        let db = test_db().await;
+
+        let user = create_user(&db, "testuser", "password123", None)
+            .await
+            .expect("Failed to create user");
+
+        // Create an expired session
+        let past_auth_time = chrono::Utc::now().timestamp() - 7200;
+        create_session(&db, &user.subject, past_auth_time, 3600, None, None)
+            .await
+            .expect("Failed to create session");
+
+        let deleted_count = cleanup_expired_sessions(&db)
+            .await
+            .expect("Failed to cleanup sessions");
+
+        assert_eq!(deleted_count, 1);
+    }
+
+    // ============================================================================
+    // Property Storage Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_set_and_get_property() {
+        let db = test_db().await;
+
+        let value = serde_json::json!({"key": "value"});
+        set_property(&db, "owner1", "test_key", &value)
+            .await
+            .expect("Failed to set property");
+
+        let retrieved = get_property(&db, "owner1", "test_key")
+            .await
+            .expect("Failed to get property")
+            .expect("Property not found");
+
+        assert_eq!(retrieved, value);
+    }
+
+    #[tokio::test]
+    async fn test_set_property_upsert() {
+        let db = test_db().await;
+
+        let value1 = serde_json::json!({"version": 1});
+        set_property(&db, "owner1", "test_key", &value1)
+            .await
+            .expect("Failed to set property");
+
+        let value2 = serde_json::json!({"version": 2});
+        set_property(&db, "owner1", "test_key", &value2)
+            .await
+            .expect("Failed to update property");
+
+        let retrieved = get_property(&db, "owner1", "test_key")
+            .await
+            .expect("Failed to get property")
+            .expect("Property not found");
+
+        assert_eq!(retrieved, value2);
+    }
+
+    #[tokio::test]
+    async fn test_property_complex_json() {
+        let db = test_db().await;
+
+        let value = serde_json::json!({
+            "nested": {
+                "array": [1, 2, 3],
+                "object": {
+                    "key": "value"
+                }
+            }
+        });
+
+        set_property(&db, "owner1", "complex", &value)
+            .await
+            .expect("Failed to set property");
+
+        let retrieved = get_property(&db, "owner1", "complex")
+            .await
+            .expect("Failed to get property")
+            .expect("Property not found");
+
+        assert_eq!(retrieved, value);
+    }
 }

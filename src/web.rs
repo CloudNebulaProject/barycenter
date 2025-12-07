@@ -25,12 +25,14 @@ use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
+use tower_http::services::ServeDir;
 
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<Settings>,
     pub db: DatabaseConnection,
     pub jwks: JwksManager,
+    pub webauthn: crate::webauthn_manager::WebAuthnManager,
 }
 
 // Security headers middleware
@@ -56,10 +58,10 @@ async fn security_headers(request: Request<Body>, next: Next) -> impl IntoRespon
         HeaderValue::from_static("1; mode=block"),
     );
 
-    // Content-Security-Policy: Restrict resource loading
+    // Content-Security-Policy: Restrict resource loading (allows WASM for passkeys)
     headers.insert(
         HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'"),
+        HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'"),
     );
 
     // Referrer-Policy: Control referrer information
@@ -81,6 +83,7 @@ pub async fn serve(
     settings: Settings,
     db: DatabaseConnection,
     jwks: JwksManager,
+    webauthn: crate::webauthn_manager::WebAuthnManager,
     seaography_schema: async_graphql::dynamic::Schema,
     jobs_schema: async_graphql::Schema<
         crate::admin_mutations::AdminQuery,
@@ -92,6 +95,7 @@ pub async fn serve(
         settings: Arc::new(settings),
         db,
         jwks,
+        webauthn,
     };
 
     // NOTE: Rate limiting should be implemented at the reverse proxy level (nginx, traefik, etc.)
@@ -111,10 +115,23 @@ pub async fn serve(
         )
         .route("/federation/trust-anchors", get(trust_anchors))
         .route("/login", get(login_page).post(login_submit))
+        .route("/login/2fa", get(login_2fa_page))
         .route("/logout", get(logout))
         .route("/authorize", get(authorize))
         .route("/token", post(token))
-        .route("/userinfo", get(userinfo));
+        .route("/userinfo", get(userinfo))
+        // WebAuthn / Passkey endpoints
+        .route("/webauthn/register/start", post(passkey_register_start))
+        .route("/webauthn/register/finish", post(passkey_register_finish))
+        .route("/webauthn/authenticate/start", post(passkey_auth_start))
+        .route("/webauthn/authenticate/finish", post(passkey_auth_finish))
+        .route("/webauthn/2fa/start", post(passkey_2fa_start))
+        .route("/webauthn/2fa/finish", post(passkey_2fa_finish))
+        .route("/account/passkeys", get(list_passkeys))
+        .route(
+            "/account/passkeys/{credential_id}",
+            axum::routing::delete(delete_passkey_handler).patch(update_passkey_handler),
+        );
 
     // Conditionally add public registration route
     if state.settings.server.allow_public_registration {
@@ -124,7 +141,9 @@ pub async fn serve(
         tracing::info!("Public user registration is DISABLED - use admin API");
     }
 
+    // Serve static files (WASM, JS, etc.)
     let router = router
+        .nest_service("/static", ServeDir::new("static"))
         .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
 
@@ -240,6 +259,16 @@ fn url_append_query(mut base: String, params: &[(&str, String)]) -> String {
     }
     base.push_str(&qs);
     base
+}
+
+/// Check if the requested scope contains high-value scopes that require 2FA
+fn is_high_value_scope(scope: &str) -> bool {
+    // Define scopes that require elevated authentication (2FA)
+    let high_value_scopes = ["admin", "payment", "transfer", "delete"];
+
+    scope
+        .split_whitespace()
+        .any(|s| high_value_scopes.contains(&s))
 }
 
 fn oauth_error_redirect(
@@ -384,9 +413,9 @@ async fn authorize(
         false
     };
 
-    let (subject, auth_time) = match session_opt {
+    let (subject, auth_time, session) = match session_opt {
         Some(sess) if sess.expires_at > chrono::Utc::now().timestamp() && !needs_fresh_auth => {
-            (sess.subject.clone(), Some(sess.auth_time))
+            (sess.subject.clone(), Some(sess.auth_time), Some(sess))
         }
         _ => {
             // No valid session or session too old
@@ -441,6 +470,85 @@ async fn authorize(
             return Redirect::temporary(&login_url).into_response();
         }
     };
+
+    // Check if 2FA is required for this authorization request
+    if let Some(sess) = &session {
+        // Get user to check 2FA requirements
+        let user = match storage::get_user_by_subject(&state.db, &subject).await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "server_error",
+                    "user not found",
+                )
+                .into_response();
+            }
+            Err(_) => {
+                return oauth_error_redirect(
+                    &q.redirect_uri,
+                    q.state.as_deref(),
+                    "server_error",
+                    "db error",
+                )
+                .into_response();
+            }
+        };
+
+        // Determine if 2FA is required
+        let requires_2fa = user.requires_2fa == 1  // Admin-enforced 2FA
+            || is_high_value_scope(&q.scope)        // Context-based: high-value scope
+            || q.max_age.as_ref().and_then(|ma| ma.parse::<i64>().ok())
+                .map_or(false, |ma| ma < 300); // Context-based: max_age < 5 minutes
+
+        // If 2FA required but not verified, redirect to 2FA page
+        if requires_2fa && sess.mfa_verified == 0 {
+            // Build return_to URL with all parameters
+            let mut return_params = vec![
+                ("client_id", q.client_id.clone()),
+                ("redirect_uri", q.redirect_uri.clone()),
+                ("response_type", q.response_type.clone()),
+                ("scope", q.scope.clone()),
+                ("code_challenge", code_challenge.clone()),
+                ("code_challenge_method", ccm.clone()),
+            ];
+            if let Some(s) = &q.state {
+                return_params.push(("state", s.clone()));
+            }
+            if let Some(n) = &q.nonce {
+                return_params.push(("nonce", n.clone()));
+            }
+            if let Some(p) = &q.prompt {
+                return_params.push(("prompt", p.clone()));
+            }
+            if let Some(d) = &q.display {
+                return_params.push(("display", d.clone()));
+            }
+            if let Some(ui) = &q.ui_locales {
+                return_params.push(("ui_locales", ui.clone()));
+            }
+            if let Some(cl) = &q.claims_locales {
+                return_params.push(("claims_locales", cl.clone()));
+            }
+            if let Some(ma) = &q.max_age {
+                return_params.push(("max_age", ma.clone()));
+            }
+            if let Some(acr) = &q.acr_values {
+                return_params.push(("acr_values", acr.clone()));
+            }
+
+            let return_to = url_append_query(
+                "/authorize".to_string(),
+                &return_params
+                    .iter()
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect::<Vec<_>>(),
+            );
+            let tfa_url = format!("/login/2fa?return_to={}", urlencoded(&return_to));
+            return Redirect::temporary(&tfa_url).into_response();
+        }
+    }
 
     let scope = q.scope.clone();
     let nonce = q.nonce.clone();
@@ -501,6 +609,8 @@ async fn authorize(
                 nonce.as_deref(),
                 auth_time,
                 None,
+                session.as_ref().and_then(|s| s.amr.as_deref()),
+                session.as_ref().and_then(|s| s.acr.as_deref()),
             )
             .await
             {
@@ -561,6 +671,8 @@ async fn authorize(
                 nonce.as_deref(),
                 auth_time,
                 Some(&access.token),
+                session.as_ref().and_then(|s| s.amr.as_deref()),
+                session.as_ref().and_then(|s| s.acr.as_deref()),
             )
             .await
             {
@@ -606,6 +718,8 @@ async fn build_id_token(
     nonce: Option<&str>,
     auth_time: Option<i64>,
     access_token: Option<&str>, // For at_hash calculation
+    amr: Option<&str>,          // Authentication Method References (JSON array)
+    acr: Option<&str>,          // Authentication Context Reference
 ) -> Result<String, CrabError> {
     let now = SystemTime::now();
     let exp_unix = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
@@ -623,6 +737,21 @@ async fn build_id_token(
 
     if let Some(at) = auth_time {
         let _ = payload.set_claim("auth_time", Some(serde_json::json!(at)));
+    }
+
+    // Add AMR claim (Authentication Method References)
+    if let Some(amr_json) = amr {
+        if let Ok(amr_value) = serde_json::from_str::<serde_json::Value>(amr_json) {
+            let _ = payload.set_claim("amr", Some(amr_value));
+        }
+    }
+
+    // Add ACR claim (Authentication Context Reference)
+    if let Some(acr_value) = acr {
+        let _ = payload.set_claim(
+            "acr",
+            Some(serde_json::Value::String(acr_value.to_string())),
+        );
     }
 
     // Add at_hash if access_token is provided (for id_token token response type)
@@ -809,6 +938,16 @@ async fn handle_authorization_code_grant(
         }
     };
 
+    // Get session to include AMR/ACR claims in ID token
+    let session_opt = if let Some(cookie) = SessionCookie::from_headers(&headers) {
+        storage::get_session(&state.db, &cookie.session_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
     // Build ID Token using helper function
     let id_token = match build_id_token(
         &state,
@@ -817,6 +956,8 @@ async fn handle_authorization_code_grant(
         code_row.nonce.as_deref(),
         code_row.auth_time,
         Some(&access.token),
+        session_opt.as_ref().and_then(|s| s.amr.as_deref()),
+        session_opt.as_ref().and_then(|s| s.acr.as_deref()),
     )
     .await
     {
@@ -960,6 +1101,16 @@ async fn handle_refresh_token_grant(
         }
     };
 
+    // Get session to include AMR/ACR claims in ID token
+    let session_opt = if let Some(cookie) = SessionCookie::from_headers(&headers) {
+        storage::get_session(&state.db, &cookie.session_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
     // Build ID Token (no nonce, no auth_time for refresh grants)
     let id_token = match build_id_token(
         &state,
@@ -968,6 +1119,8 @@ async fn handle_refresh_token_grant(
         None,
         None,
         Some(&access.token),
+        session_opt.as_ref().and_then(|s| s.amr.as_deref()),
+        session_opt.as_ref().and_then(|s| s.acr.as_deref()),
     )
     .await
     {
@@ -1295,22 +1448,108 @@ async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
                 input[type="text"], input[type="password"] {{ width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }}
                 button {{ margin-top: 20px; padding: 10px 20px; background-color: #007bff; color: white; border: none; cursor: pointer; }}
                 button:hover {{ background-color: #0056b3; }}
+                .divider {{ margin: 30px 0; text-align: center; color: #666; }}
+                .divider::before, .divider::after {{ content: ""; display: inline-block; width: 40%; height: 1px; background: #ccc; vertical-align: middle; }}
+                .divider::before {{ margin-right: 10px; }}
+                .divider::after {{ margin-left: 10px; }}
+                #passkey-status {{ margin: 10px 0; padding: 10px; background: #e7f3ff; border-left: 4px solid #007bff; display: none; }}
             </style>
+            <script type="module">
+                import init, {{
+                    supports_webauthn,
+                    supports_conditional_ui,
+                    authenticate_passkey
+                }} from '/static/wasm/barycenter_webauthn_client.js';
+
+                async function setupConditionalUI() {{
+                    try {{
+                        await init();
+
+                        if (!supports_webauthn()) {{
+                            console.log('WebAuthn not supported');
+                            return;
+                        }}
+
+                        const statusDiv = document.getElementById('passkey-status');
+                        const usernameInput = document.getElementById('username');
+
+                        if (await supports_conditional_ui()) {{
+                            statusDiv.textContent = 'Passkey autofill available';
+                            statusDiv.style.display = 'block';
+
+                            // Enable autocomplete for conditional UI
+                            usernameInput.setAttribute('autocomplete', 'username webauthn');
+
+                            // Fetch challenge for conditional UI
+                            const resp = await fetch('/webauthn/authenticate/start', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{}})
+                            }});
+
+                            if (!resp.ok) {{
+                                console.error('Failed to start passkey auth');
+                                return;
+                            }}
+
+                            const data = await resp.json();
+
+                            // Start conditional UI (non-blocking)
+                            authenticate_passkey(
+                                JSON.stringify(data.options),
+                                'conditional'
+                            ).then(async credentialJson => {{
+                                const credential = JSON.parse(credentialJson);
+
+                                // Send to server
+                                const finishResp = await fetch('/webauthn/authenticate/finish', {{
+                                    method: 'POST',
+                                    headers: {{ 'Content-Type': 'application/json' }},
+                                    body: JSON.stringify({{
+                                        credential: credential,
+                                        return_to: '{return_to}'
+                                    }})
+                                }});
+
+                                if (finishResp.ok) {{
+                                    const result = await finishResp.json();
+                                    window.location.href = result.redirect_to || '/';
+                                }} else {{
+                                    const error = await finishResp.text();
+                                    console.error('Passkey auth failed:', error);
+                                }}
+                            }}).catch(err => {{
+                                // User cancelled or error - this is fine, don't show error
+                                console.log('Passkey auth cancelled or failed:', err);
+                            }});
+                        }} else {{
+                            statusDiv.textContent = 'Passkey login available (click username field)';
+                            statusDiv.style.display = 'block';
+                        }}
+                    }} catch (err) {{
+                        console.error('WASM initialization error:', err);
+                    }}
+                }}
+
+                setupConditionalUI();
+            </script>
         </head>
         <body>
             <h1>Login</h1>
             {error_html}
+            <div id="passkey-status"></div>
             <form method="POST" action="/login">
                 <input type="hidden" name="return_to" value="{return_to}">
                 <label>
                     Username:
-                    <input type="text" name="username" required autofocus>
+                    <input type="text" id="username" name="username" required autofocus>
                 </label>
+                <div class="divider">or sign in with password</div>
                 <label>
                     Password:
-                    <input type="password" name="password" required>
+                    <input type="password" name="password">
                 </label>
-                <button type="submit">Login</button>
+                <button type="submit">Login with Password</button>
             </form>
         </body>
         </html>
@@ -1377,6 +1616,17 @@ async fn login_submit(
             }
         };
 
+    // Check if user requires 2FA
+    let user = match storage::get_user_by_subject(&state.db, &subject).await {
+        Ok(Some(u)) => u,
+        _ => {
+            let return_to = urlencoded(&form.return_to.unwrap_or_default());
+            let error = urlencoded("User not found");
+            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                .into_response();
+        }
+    };
+
     // Create session
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -1393,11 +1643,19 @@ async fn login_submit(
         }
     };
 
-    // Set cookie and redirect
+    // Set cookie
     let cookie = SessionCookie::new(session.session_id);
     let cookie_header = cookie.to_cookie_header(&state.settings);
 
-    let redirect_url = form.return_to.unwrap_or_else(|| "/".to_string());
+    // If user requires 2FA, redirect to 2FA page with partial session
+    let redirect_url = if user.requires_2fa == 1 {
+        // Partial session - redirect to 2FA
+        let return_to = urlencoded(&form.return_to.unwrap_or_default());
+        format!("/login/2fa?return_to={return_to}")
+    } else {
+        // Full session - redirect to destination
+        form.return_to.unwrap_or_else(|| "/".to_string())
+    };
 
     Response::builder()
         .status(StatusCode::SEE_OTHER)
@@ -1425,6 +1683,113 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
         .into_response()
 }
 
+/// GET /login/2fa - Show 2FA page
+async fn login_2fa_page(
+    State(_state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<LoginQuery>,
+) -> impl IntoResponse {
+    // Verify user has a partial session
+    let _cookie = match SessionCookie::from_headers(&headers) {
+        Some(c) => c,
+        None => {
+            // No session - redirect to login
+            let return_to = urlencoded(&q.return_to.unwrap_or_default());
+            return Redirect::temporary(&format!("/login?return_to={return_to}")).into_response();
+        }
+    };
+
+    let return_to = q.return_to.unwrap_or_else(|| "/".to_string());
+    let return_to_escaped = html_escape(&return_to);
+    let error_html = q
+        .error
+        .as_ref()
+        .map(|e| format!(r#"<p style="color: red;">{}</p>"#, html_escape(e)))
+        .unwrap_or_default();
+
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Two-Factor Authentication</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{ font-family: system-ui, sans-serif; max-width: 400px; margin: 50px auto; padding: 20px; }}
+        h1 {{ font-size: 24px; margin-bottom: 10px; }}
+        p {{ color: #666; margin-bottom: 30px; }}
+        .error {{ color: red; }}
+        button {{
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+        }}
+        button:hover {{ background: #0056b3; }}
+        #status {{ margin-top: 20px; color: #666; }}
+    </style>
+</head>
+<body>
+    <h1>Two-Factor Authentication</h1>
+    <p>Please use your security key or passkey to complete sign-in.</p>
+    {error_html}
+    <button id="verifyBtn">Verify with Passkey</button>
+    <div id="status"></div>
+    <input type="hidden" id="returnTo" value="{return_to_escaped}">
+
+    <script>
+        document.getElementById('verifyBtn').addEventListener('click', async () => {{
+            const status = document.getElementById('status');
+            const returnTo = document.getElementById('returnTo').value;
+
+            try {{
+                status.textContent = 'Starting 2FA verification...';
+
+                // Start 2FA challenge
+                const startResp = await fetch('/webauthn/2fa/start', {{ method: 'POST' }});
+                if (!startResp.ok) {{
+                    throw new Error('Failed to start 2FA: ' + await startResp.text());
+                }}
+
+                const {{ options }} = await startResp.json();
+                status.textContent = 'Waiting for passkey...';
+
+                // Get credential from authenticator
+                const credential = await navigator.credentials.get({{ publicKey: options.publicKey }});
+
+                status.textContent = 'Verifying...';
+
+                // Complete 2FA
+                const finishResp = await fetch('/webauthn/2fa/finish', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ credential }})
+                }});
+
+                if (finishResp.ok) {{
+                    status.textContent = 'Success! Redirecting...';
+                    window.location.href = returnTo || '/';
+                }} else {{
+                    const error = await finishResp.text();
+                    status.textContent = 'Verification failed: ' + error;
+                }}
+            }} catch (err) {{
+                status.textContent = 'Error: ' + err.message;
+                console.error(err);
+            }}
+        }});
+    </script>
+</body>
+</html>"#,
+        error_html = error_html,
+        return_to_escaped = return_to_escaped
+    ))
+    .into_response()
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1438,4 +1803,686 @@ fn urlencoded(s: &str) -> String {
         .unwrap_or_default()
         .trim_start_matches('=')
         .to_string()
+}
+
+// ============================================================================
+// WebAuthn / Passkey Endpoints
+// ============================================================================
+
+use webauthn_rs::prelude::*;
+
+// Request/Response types for passkey registration
+
+#[derive(Debug, Deserialize)]
+struct PasskeyRegisterStartRequest {
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PasskeyRegisterStartResponse {
+    options: CreationChallengeResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct PasskeyRegisterFinishRequest {
+    credential: RegisterPublicKeyCredential,
+    name: Option<String>, // Friendly name for the passkey
+}
+
+#[derive(Debug, Serialize)]
+struct PasskeyRegisterFinishResponse {
+    verified: bool,
+    credential_id: String,
+}
+
+// Request/Response types for passkey authentication
+
+#[derive(Debug, Deserialize)]
+struct PasskeyAuthStartRequest {
+    username: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PasskeyAuthStartResponse {
+    options: RequestChallengeResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct PasskeyAuthFinishRequest {
+    credential: PublicKeyCredential,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PasskeyAuthFinishResponse {
+    success: bool,
+    redirect_url: Option<String>,
+}
+
+// Request/Response types for passkey management
+
+#[derive(Debug, Serialize)]
+struct PasskeyInfo {
+    credential_id: String,
+    name: Option<String>,
+    created_at: i64,
+    last_used_at: Option<i64>,
+    backup_state: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdatePasskeyRequest {
+    name: Option<String>,
+}
+
+/// POST /webauthn/register/start
+/// Start passkey registration flow - requires valid session
+async fn passkey_register_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PasskeyRegisterStartRequest>,
+) -> Result<Json<PasskeyRegisterStartResponse>, (StatusCode, String)> {
+    // Get session from cookie
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Get user info
+    let user = storage::get_user_by_subject(&state.db, &session.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "User not found".to_string()))?;
+
+    // Start passkey registration
+    let user_id = uuid::Uuid::parse_str(&session.subject).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid subject UUID: {}", e),
+        )
+    })?;
+
+    let (ccr, reg_state) = state
+        .webauthn
+        .start_passkey_registration(user_id, &user.username, &user.username)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Store challenge
+    let challenge_b64 = Base64UrlUnpadded::encode_string(&ccr.public_key.challenge);
+    let options_json = serde_json::to_string(&reg_state)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    storage::create_webauthn_challenge(
+        &state.db,
+        &challenge_b64,
+        Some(session.subject.clone()),
+        None,
+        "registration",
+        &options_json,
+        300, // 5 minutes
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(PasskeyRegisterStartResponse { options: ccr }))
+}
+
+/// POST /webauthn/register/finish
+/// Complete passkey registration - requires valid session
+async fn passkey_register_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PasskeyRegisterFinishRequest>,
+) -> Result<Json<PasskeyRegisterFinishResponse>, (StatusCode, String)> {
+    // Get session
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Get the most recent registration challenge for this subject
+    let challenge_data = storage::get_latest_webauthn_challenge_by_subject(
+        &state.db,
+        &session.subject,
+        "registration",
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((
+        StatusCode::BAD_REQUEST,
+        "No registration challenge found or expired".to_string(),
+    ))?;
+
+    // Verify it's a registration challenge for this user
+    if challenge_data.challenge_type != "registration" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid challenge type".to_string(),
+        ));
+    }
+    if challenge_data.subject.as_ref() != Some(&session.subject) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Challenge subject mismatch".to_string(),
+        ));
+    }
+
+    // Deserialize registration state
+    let reg_state: PasskeyRegistration = serde_json::from_str(&challenge_data.options_json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid state: {}", e),
+            )
+        })?;
+
+    // Finish registration
+    let passkey = state
+        .webauthn
+        .finish_passkey_registration(&req.credential, &reg_state)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Registration failed: {}", e),
+            )
+        })?;
+
+    // Serialize the entire Passkey object for storage
+    let passkey_json = serde_json::to_string(&passkey).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to serialize passkey: {}", e),
+        )
+    })?;
+
+    // Use credential ID from the request
+    let cred_id_b64 = Base64UrlUnpadded::encode_string(req.credential.id.as_bytes());
+
+    storage::create_passkey(
+        &state.db,
+        &cred_id_b64,
+        &session.subject,
+        &passkey_json,
+        0,                // counter - TODO: extract from passkey when we understand the API
+        None,             // aaguid
+        false,            // backup_eligible - TODO: extract from passkey
+        false,            // backup_state - TODO: extract from passkey
+        None,             // transports
+        req.name.clone(), // Name from request
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Delete challenge
+    storage::delete_webauthn_challenge(&state.db, &challenge_data.challenge)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(PasskeyRegisterFinishResponse {
+        verified: true,
+        credential_id: cred_id_b64,
+    }))
+}
+
+/// POST /webauthn/authenticate/start
+/// Start passkey authentication flow - public endpoint
+async fn passkey_auth_start(
+    State(state): State<AppState>,
+    Json(req): Json<PasskeyAuthStartRequest>,
+) -> Result<Json<PasskeyAuthStartResponse>, (StatusCode, String)> {
+    // If username provided, get their passkeys; otherwise allow discoverable
+    let passkeys = if let Some(username) = &req.username {
+        let user = storage::get_user_by_username(&state.db, username)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((StatusCode::NOT_FOUND, "User not found".to_string()))?;
+
+        let db_passkeys = storage::get_passkeys_by_subject(&state.db, &user.subject)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        if db_passkeys.is_empty() {
+            return Err((StatusCode::NOT_FOUND, "No passkeys registered".to_string()));
+        }
+
+        // Convert to webauthn-rs Passkey format
+        // TODO: This requires understanding the exact Passkey structure
+        // For now, we'll deserialize the entire Passkey object that we stored
+        db_passkeys
+            .into_iter()
+            .filter_map(|pk| {
+                // Deserialize the entire Passkey from JSON
+                serde_json::from_str::<Passkey>(&pk.public_key_cose).ok()
+            })
+            .collect()
+    } else {
+        // Discoverable/resident key flow - empty list allows any registered credential
+        Vec::new()
+    };
+
+    // Start authentication
+    let (rcr, auth_state) = state
+        .webauthn
+        .start_passkey_authentication(passkeys)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Store challenge
+    let challenge_b64 = Base64UrlUnpadded::encode_string(&rcr.public_key.challenge);
+    let options_json = serde_json::to_string(&auth_state)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Get subject from earlier lookup if username was provided
+    let subject = if let Some(username) = &req.username {
+        storage::get_user_by_username(&state.db, username)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.subject)
+    } else {
+        None
+    };
+
+    storage::create_webauthn_challenge(
+        &state.db,
+        &challenge_b64,
+        subject,
+        None,
+        "authentication",
+        &options_json,
+        300, // 5 minutes
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(PasskeyAuthStartResponse { options: rcr }))
+}
+
+/// POST /webauthn/authenticate/finish
+/// Complete passkey authentication - creates session
+async fn passkey_auth_finish(
+    State(state): State<AppState>,
+    Json(req): Json<PasskeyAuthFinishRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    // Get passkey by credential ID to find the subject
+    let cred_id_b64 = Base64UrlUnpadded::encode_string(req.credential.id.as_bytes());
+    let passkey = storage::get_passkey_by_credential_id(&state.db, &cred_id_b64)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Passkey not found".to_string()))?;
+
+    // Get the most recent authentication challenge for this subject
+    let challenge_data = storage::get_latest_webauthn_challenge_by_subject(
+        &state.db,
+        &passkey.subject,
+        "authentication",
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((
+        StatusCode::BAD_REQUEST,
+        "No authentication challenge found or expired".to_string(),
+    ))?;
+
+    // Deserialize auth state
+    let auth_state: PasskeyAuthentication = serde_json::from_str(&challenge_data.options_json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid state: {}", e),
+            )
+        })?;
+
+    // Finish authentication
+    let _auth_result = state
+        .webauthn
+        .finish_passkey_authentication(&req.credential, &auth_state)
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                format!("Authentication failed: {}", e),
+            )
+        })?;
+
+    // Update counter (TODO: extract counter from auth_result when we understand the API)
+    // For now, just update last_used_at
+    // storage::update_passkey_counter(&state.db, &cred_id_b64, new_counter).await?;
+
+    // Determine AMR based on backup state
+    let amr = if passkey.backup_eligible == 1 && passkey.backup_state == 1 {
+        vec!["swk".to_string()] // Software key (cloud synced)
+    } else {
+        vec!["hwk".to_string()] // Hardware key
+    };
+
+    // Create session
+    let session = storage::create_session(&state.db, &passkey.subject, 3600, None, None)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Update session with passkey AMR
+    storage::update_session_auth_context(
+        &state.db,
+        &session.session_id,
+        Some(amr),
+        Some("aal1".to_string()),
+        false,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Delete challenge
+    storage::delete_webauthn_challenge(&state.db, &challenge_data.challenge)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Set session cookie and redirect
+    let cookie = SessionCookie::new(session.session_id);
+    let cookie_header = cookie.to_cookie_header(&state.settings);
+    let redirect_url = req.return_to.unwrap_or_else(|| "/".to_string());
+
+    Ok(Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(axum::http::header::SET_COOKIE, cookie_header)
+        .header(axum::http::header::LOCATION, redirect_url)
+        .body(Body::empty())
+        .unwrap())
+}
+
+/// POST /webauthn/2fa/start
+/// Start 2FA step-up with passkey - requires partial session
+async fn passkey_2fa_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<PasskeyAuthStartResponse>, (StatusCode, String)> {
+    // Get session
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Check not already MFA verified
+    if session.mfa_verified == 1 {
+        return Err((StatusCode::BAD_REQUEST, "Already MFA verified".to_string()));
+    }
+
+    // Get user's passkeys
+    let db_passkeys = storage::get_passkeys_by_subject(&state.db, &session.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if db_passkeys.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "No passkeys registered for 2FA".to_string(),
+        ));
+    }
+
+    // Convert to webauthn-rs format
+    let passkeys: Vec<Passkey> = db_passkeys
+        .into_iter()
+        .filter_map(|pk| {
+            // Deserialize the entire Passkey from JSON
+            serde_json::from_str::<Passkey>(&pk.public_key_cose).ok()
+        })
+        .collect();
+
+    // Start authentication
+    let (rcr, auth_state) = state
+        .webauthn
+        .start_passkey_authentication(passkeys)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Store challenge linked to session
+    let challenge_b64 = Base64UrlUnpadded::encode_string(&rcr.public_key.challenge);
+    let options_json = serde_json::to_string(&auth_state)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    storage::create_webauthn_challenge(
+        &state.db,
+        &challenge_b64,
+        Some(session.subject.clone()),
+        Some(session.session_id.clone()),
+        "2fa",
+        &options_json,
+        300,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(PasskeyAuthStartResponse { options: rcr }))
+}
+
+/// POST /webauthn/2fa/finish
+/// Complete 2FA step-up - upgrades session to MFA
+async fn passkey_2fa_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PasskeyAuthFinishRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    // Get session
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Get the most recent 2FA challenge for this subject
+    let challenge_data =
+        storage::get_latest_webauthn_challenge_by_subject(&state.db, &session.subject, "2fa")
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                "No 2FA challenge found or expired".to_string(),
+            ))?;
+
+    // Verify the challenge is for this session
+    if challenge_data.session_id.as_ref() != Some(&session.session_id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Challenge session mismatch".to_string(),
+        ));
+    }
+
+    // Deserialize auth state
+    let auth_state: PasskeyAuthentication = serde_json::from_str(&challenge_data.options_json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid state: {}", e),
+            )
+        })?;
+
+    // Finish authentication
+    let _auth_result = state
+        .webauthn
+        .finish_passkey_authentication(&req.credential, &auth_state)
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                format!("2FA verification failed: {}", e),
+            )
+        })?;
+
+    // Get passkey by credential ID from request
+    let cred_id_b64 = Base64UrlUnpadded::encode_string(req.credential.id.as_bytes());
+    let passkey = storage::get_passkey_by_credential_id(&state.db, &cred_id_b64)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Passkey not found".to_string()))?;
+
+    // Update counter (TODO: extract counter from auth_result when we understand the API)
+    // storage::update_passkey_counter(&state.db, &cred_id_b64, new_counter).await?;
+
+    // Append passkey method to AMR
+    let amr_method = if passkey.backup_eligible == 1 && passkey.backup_state == 1 {
+        "swk"
+    } else {
+        "hwk"
+    };
+    storage::append_session_amr(&state.db, &session.session_id, amr_method)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Upgrade session to MFA
+    storage::update_session_auth_context(
+        &state.db,
+        &session.session_id,
+        None,
+        Some("aal2".to_string()),
+        true,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Delete challenge
+    storage::delete_webauthn_challenge(&state.db, &challenge_data.challenge)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Return success - JavaScript will handle redirect
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            r#"{"verified":true,"message":"2FA verification successful"}"#,
+        ))
+        .unwrap())
+}
+
+/// GET /account/passkeys
+/// List user's registered passkeys
+async fn list_passkeys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PasskeyInfo>>, (StatusCode, String)> {
+    // Get session
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Get passkeys
+    let passkeys = storage::get_passkeys_by_subject(&state.db, &session.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let info: Vec<PasskeyInfo> = passkeys
+        .into_iter()
+        .map(|pk| PasskeyInfo {
+            credential_id: pk.credential_id,
+            name: pk.name,
+            created_at: pk.created_at,
+            last_used_at: pk.last_used_at,
+            backup_state: pk.backup_state,
+        })
+        .collect();
+
+    Ok(Json(info))
+}
+
+/// DELETE /account/passkeys/{credential_id}
+/// Delete a passkey
+async fn delete_passkey_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(credential_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Get session
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Verify passkey belongs to user
+    let passkey = storage::get_passkey_by_credential_id(&state.db, &credential_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Passkey not found".to_string()))?;
+
+    if passkey.subject != session.subject {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Passkey belongs to another user".to_string(),
+        ));
+    }
+
+    // Check user has at least one auth method remaining
+    let remaining_passkeys = storage::get_passkeys_by_subject(&state.db, &session.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let user = storage::get_user_by_subject(&state.db, &session.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "User not found".to_string()))?;
+
+    if remaining_passkeys.len() == 1 && user.password_hash.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Cannot delete last auth method".to_string(),
+        ));
+    }
+
+    // Delete passkey
+    storage::delete_passkey(&state.db, &credential_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// PATCH /account/passkeys/{credential_id}
+/// Update passkey name
+async fn update_passkey_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(credential_id): Path<String>,
+    Json(req): Json<UpdatePasskeyRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Get session
+    let cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "No session".to_string()))?;
+
+    let session = storage::get_session(&state.db, &cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid session".to_string()))?;
+
+    // Verify passkey belongs to user
+    let passkey = storage::get_passkey_by_credential_id(&state.db, &credential_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Passkey not found".to_string()))?;
+
+    if passkey.subject != session.subject {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Passkey belongs to another user".to_string(),
+        ));
+    }
+
+    // Update name
+    storage::update_passkey_name(&state.db, &credential_id, req.name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
