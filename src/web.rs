@@ -3277,10 +3277,17 @@ async fn device_authorization(
         }
 
         let client = client.unwrap();
-        (client.client_id, client.client_secret, client.client_name, false)
+        (
+            client.client_id,
+            client.client_secret,
+            client.client_name,
+            false,
+        )
     } else {
         // Auto-register new client
-        let new_client_name = req.client_name.unwrap_or_else(|| "Auto-registered Device".to_string());
+        let new_client_name = req
+            .client_name
+            .unwrap_or_else(|| "Auto-registered Device".to_string());
         let new_client = storage::NewClient {
             client_name: Some(new_client_name.clone()),
             redirect_uris: vec![], // Device flow doesn't use redirect URIs
@@ -3298,7 +3305,12 @@ async fn device_authorization(
                 )
             })?;
 
-        (client.client_id, client.client_secret, Some(new_client_name), true)
+        (
+            client.client_id,
+            client.client_secret,
+            Some(new_client_name),
+            true,
+        )
     };
 
     // Validate scope (must include "openid" for OIDC)
@@ -3335,7 +3347,8 @@ async fn device_authorization(
     // Build URIs
     let issuer = state.settings.issuer();
     let verification_uri = format!("{}/device", issuer);
-    let verification_uri_complete = format!("{}/device?user_code={}", issuer, device_code.user_code);
+    let verification_uri_complete =
+        format!("{}/device?user_code={}", issuer, device_code.user_code);
 
     Ok(Json(DeviceAuthorizationResponse {
         device_code: device_code.device_code,
@@ -3344,8 +3357,16 @@ async fn device_authorization(
         verification_uri_complete,
         expires_in: 1800,
         interval: 5,
-        client_id: if auto_registered { Some(client_id) } else { None },
-        client_secret: if auto_registered { Some(client_secret) } else { None },
+        client_id: if auto_registered {
+            Some(client_id)
+        } else {
+            None
+        },
+        client_secret: if auto_registered {
+            Some(client_secret)
+        } else {
+            None
+        },
     }))
 }
 
@@ -3407,7 +3428,10 @@ async fn device_page(
 
     // No session, redirect to login
     let return_to = if let Some(code) = query.user_code {
-        format!("/login?return_to={}", urlencoding::encode(&format!("/device?user_code={}", code)))
+        format!(
+            "/login?return_to={}",
+            urlencoding::encode(&format!("/device?user_code={}", code))
+        )
     } else {
         "/login?return_to=/device".to_string()
     };
@@ -3436,14 +3460,19 @@ async fn device_verify(
         .ok_or((StatusCode::UNAUTHORIZED, "Session not found".to_string()))?;
 
     // Lookup device code by user_code
-    let device_code = storage::get_device_code_by_user_code(&state.db, &req.user_code.to_uppercase())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Device code not found or expired".to_string()))?;
+    let device_code =
+        storage::get_device_code_by_user_code(&state.db, &req.user_code.to_uppercase())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "Device code not found or expired".to_string(),
+            ))?;
 
     // Parse device_info
-    let device_info: serde_json::Value = serde_json::from_str(device_code.device_info.as_deref().unwrap_or("{}"))
-        .unwrap_or(json!({}));
+    let device_info: serde_json::Value =
+        serde_json::from_str(device_code.device_info.as_deref().unwrap_or("{}"))
+            .unwrap_or(json!({}));
 
     let ip_address = device_info["ip_address"].as_str().unwrap_or("Unknown");
     let user_agent = device_info["user_agent"].as_str().unwrap_or("Unknown");
@@ -3508,7 +3537,10 @@ async fn device_verify(
 </body>
 </html>"#,
         device_code.user_code,
-        device_code.client_name.as_deref().unwrap_or("Unknown Application"),
+        device_code
+            .client_name
+            .as_deref()
+            .unwrap_or("Unknown Application"),
         device_code.scope,
         ip_address,
         user_agent,
@@ -3542,10 +3574,14 @@ async fn device_consent(
         .ok_or((StatusCode::UNAUTHORIZED, "Session not found".to_string()))?;
 
     // Lookup device code by user_code
-    let device_code = storage::get_device_code_by_user_code(&state.db, &req.user_code.to_uppercase())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Device code not found or expired".to_string()))?;
+    let device_code =
+        storage::get_device_code_by_user_code(&state.db, &req.user_code.to_uppercase())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "Device code not found or expired".to_string(),
+            ))?;
 
     // TODO: Check 2FA requirements (admin-enforced, high-value scopes, max_age)
     // For now, we'll skip 2FA checks and proceed directly

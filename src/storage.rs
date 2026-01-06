@@ -1415,10 +1415,7 @@ pub async fn approve_device_code(
 }
 
 /// Deny device code
-pub async fn deny_device_code(
-    db: &DatabaseConnection,
-    device_code: &str,
-) -> Result<(), CrabError> {
+pub async fn deny_device_code(db: &DatabaseConnection, device_code: &str) -> Result<(), CrabError> {
     use entities::device_code::{Column, Entity};
 
     if let Some(dc) = Entity::find()
