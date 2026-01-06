@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grant Access - Barycenter</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .consent-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            max-width: 480px;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .consent-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .consent-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .consent-header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .consent-body {
+            padding: 30px;
+        }
+
+        .client-info {
+            background: #f7f9fc;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 24px;
+            border-left: 4px solid #667eea;
+        }
+
+        .client-info h2 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 12px;
+        }
+
+        .client-info p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .scopes-section {
+            margin-bottom: 24px;
+        }
+
+        .scopes-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 12px;
+        }
+
+        .scope-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .scope-item {
+            display: flex;
+            align-items: flex-start;
+            padding: 12px;
+            background: #f7f9fc;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+
+        .scope-item::before {
+            content: "✓";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 12px;
+            flex-shrink: 0;
+        }
+
+        .scope-item span {
+            color: #333;
+            font-size: 14px;
+        }
+
+        .scope-description {
+            color: #666;
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .warning-box p {
+            color: #856404;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-approve {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-approve:hover {
+            background: #5568d3;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-deny {
+            background: #f1f3f5;
+            color: #495057;
+        }
+
+        .btn-deny:hover {
+            background: #e9ecef;
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .user-info {
+            text-align: center;
+            padding: 16px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .user-info strong {
+            color: #333;
+        }
+
+        @media (max-width: 480px) {
+            .action-buttons {
+                flex-direction: column-reverse;
+            }
+
+            button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="consent-container">
+        <div class="consent-header">
+            <h1>🔐 Grant Access</h1>
+            <p>Authorization Request</p>
+        </div>
+
+        <div class="consent-body">
+            <div class="client-info">
+                <h2 id="clientName"><!-- Client name inserted here --></h2>
+                <p>This application is requesting access to your account.</p>
+            </div>
+
+            <div class="scopes-section">
+                <h3>Requested Permissions:</h3>
+                <ul class="scope-list" id="scopesList">
+                    <!-- Scopes inserted dynamically -->
+                </ul>
+            </div>
+
+            <div class="warning-box">
+                <p>
+                    <strong>Before you continue:</strong> Only approve if you trust this application.
+                    You can revoke access at any time from your account settings.
+                </p>
+            </div>
+
+            <form method="POST" action="/consent">
+                <input type="hidden" name="client_id" id="clientId">
+                <input type="hidden" name="scope" id="scope">
+                <input type="hidden" name="state" id="state">
+                <input type="hidden" name="redirect_uri" id="redirectUri">
+                <input type="hidden" name="response_type" id="responseType">
+                <input type="hidden" name="code_challenge" id="codeChallenge">
+                <input type="hidden" name="code_challenge_method" id="codeChallengeMethod">
+                <input type="hidden" name="nonce" id="nonce">
+
+                <div class="action-buttons">
+                    <button type="submit" name="action" value="deny" class="btn-deny">
+                        Deny Access
+                    </button>
+                    <button type="submit" name="action" value="approve" class="btn-approve">
+                        Approve Access
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div class="user-info">
+            Logged in as <strong id="username"><!-- Username inserted here --></strong>
+        </div>
+    </div>
+
+    <script>
+        // Parse query parameters
+        const params = new URLSearchParams(window.location.search);
+        const clientName = params.get('client_name') || 'Unknown Application';
+        const clientId = params.get('client_id') || '';
+        const scope = params.get('scope') || '';
+        const state = params.get('state') || '';
+        const redirectUri = params.get('redirect_uri') || '';
+        const responseType = params.get('response_type') || '';
+        const codeChallenge = params.get('code_challenge') || '';
+        const codeChallengeMethod = params.get('code_challenge_method') || '';
+        const nonce = params.get('nonce') || '';
+        const username = params.get('username') || 'User';
+
+        // Update UI
+        document.getElementById('clientName').textContent = clientName;
+        document.getElementById('clientId').value = clientId;
+        document.getElementById('scope').value = scope;
+        document.getElementById('state').value = state;
+        document.getElementById('redirectUri').value = redirectUri;
+        document.getElementById('responseType').value = responseType;
+        document.getElementById('codeChallenge').value = codeChallenge;
+        document.getElementById('codeChallengeMethod').value = codeChallengeMethod;
+        document.getElementById('nonce').value = nonce;
+        document.getElementById('username').textContent = username;
+
+        // Scope descriptions
+        const scopeDescriptions = {
+            'openid': { name: 'OpenID Connect', desc: 'Basic user identity information' },
+            'profile': { name: 'Profile Information', desc: 'Your name and basic profile' },
+            'email': { name: 'Email Address', desc: 'Your email address' },
+            'phone': { name: 'Phone Number', desc: 'Your phone number' },
+            'address': { name: 'Address', desc: 'Your postal address' },
+            'offline_access': { name: 'Offline Access', desc: 'Access when you\'re not present' },
+            'admin': { name: 'Admin Access', desc: '⚠️ Full administrative privileges' },
+            'payment': { name: 'Payment Access', desc: '⚠️ Initiate payments' },
+            'transfer': { name: 'Transfer Access', desc: '⚠️ Transfer funds' },
+            'delete': { name: 'Delete Access', desc: '⚠️ Delete data' },
+        };
+
+        // Render scopes
+        const scopesList = document.getElementById('scopesList');
+        const scopes = scope.split(' ').filter(s => s);
+
+        scopes.forEach(s => {
+            const li = document.createElement('li');
+            li.className = 'scope-item';
+
+            const scopeInfo = scopeDescriptions[s] || { name: s, desc: '' };
+            li.innerHTML = `
+                <span>
+                    <strong>${scopeInfo.name}</strong>
+                    ${scopeInfo.desc ? `<div class="scope-description">${scopeInfo.desc}</div>` : ''}
+                </span>
+            `;
+            scopesList.appendChild(li);
+        });
+    </script>
+</body>
+</html>

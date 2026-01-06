@@ -1056,6 +1056,136 @@ pub async fn revoke_access_token(db: &DatabaseConnection, token: &str) -> Result
     Ok(())
 }
 
+// ============================================================================
+// Consent Operations
+// ============================================================================
+
+/// Grant consent for a client to access a user's resources with specific scopes
+pub async fn grant_consent(
+    db: &DatabaseConnection,
+    client_id: &str,
+    subject: &str,
+    scope: &str,
+    ttl_secs: Option<i64>,
+) -> Result<entities::consent::Model, CrabError> {
+    use entities::consent;
+
+    let now = Utc::now().timestamp();
+    let expires_at = ttl_secs.map(|ttl| now + ttl);
+
+    let consent = consent::ActiveModel {
+        id: Default::default(),
+        client_id: Set(client_id.to_string()),
+        subject: Set(subject.to_string()),
+        scope: Set(scope.to_string()),
+        granted_at: Set(now),
+        expires_at: Set(expires_at),
+        revoked: Set(0),
+    };
+
+    Ok(consent.insert(db).await?)
+}
+
+/// Check if consent exists for a client and subject with the requested scopes
+///
+/// Returns true if:
+/// - A non-revoked consent exists
+/// - The consent covers all requested scopes
+/// - The consent hasn't expired
+pub async fn has_consent(
+    db: &DatabaseConnection,
+    client_id: &str,
+    subject: &str,
+    requested_scopes: &str,
+) -> Result<bool, CrabError> {
+    use entities::consent::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    // Get all active consents for this client and subject
+    let consents = Entity::find()
+        .filter(Column::ClientId.eq(client_id))
+        .filter(Column::Subject.eq(subject))
+        .filter(Column::Revoked.eq(0))
+        .all(db)
+        .await?;
+
+    let requested: std::collections::HashSet<_> = requested_scopes.split_whitespace().collect();
+
+    for consent in consents {
+        // Check if expired
+        if let Some(expires_at) = consent.expires_at {
+            if expires_at < now {
+                continue;
+            }
+        }
+
+        // Check if this consent covers all requested scopes
+        let granted: std::collections::HashSet<_> = consent.scope.split_whitespace().collect();
+
+        if requested.is_subset(&granted) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Get all consents for a subject
+pub async fn get_consents_by_subject(
+    db: &DatabaseConnection,
+    subject: &str,
+) -> Result<Vec<entities::consent::Model>, CrabError> {
+    use entities::consent::{Column, Entity};
+
+    Ok(Entity::find()
+        .filter(Column::Subject.eq(subject))
+        .filter(Column::Revoked.eq(0))
+        .all(db)
+        .await?)
+}
+
+/// Revoke a specific consent
+pub async fn revoke_consent(db: &DatabaseConnection, consent_id: i32) -> Result<(), CrabError> {
+    use entities::consent::{Column, Entity};
+
+    if let Some(consent) = Entity::find()
+        .filter(Column::Id.eq(consent_id))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::consent::ActiveModel = consent.into();
+        active.revoked = Set(1);
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
+/// Revoke all consents for a client and subject
+pub async fn revoke_consents_for_client(
+    db: &DatabaseConnection,
+    client_id: &str,
+    subject: &str,
+) -> Result<(), CrabError> {
+    use entities::consent::{Column, Entity};
+
+    let consents = Entity::find()
+        .filter(Column::ClientId.eq(client_id))
+        .filter(Column::Subject.eq(subject))
+        .filter(Column::Revoked.eq(0))
+        .all(db)
+        .await?;
+
+    for consent in consents {
+        let mut active: entities::consent::ActiveModel = consent.into();
+        active.revoked = Set(1);
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

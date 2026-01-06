@@ -36,6 +36,7 @@ impl TestServer {
             .env("RUST_LOG", "error")
             .env("BARYCENTER__SERVER__ALLOW_PUBLIC_REGISTRATION", "true") // Enable registration for tests
             .env("BARYCENTER__SERVER__PUBLIC_BASE_URL", &base_url) // Set public base URL for WebAuthn
+            .env("BARYCENTER_SKIP_CONSENT", "1") // Skip consent for tests
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -352,25 +353,119 @@ fn test_oauth2_authorization_code_flow() {
 
     println!("Redirect location: {}", location);
 
-    let redirect_url_parsed = if location.starts_with("http") {
-        url::Url::parse(location).expect("Invalid redirect URL")
-    } else {
-        let base_url_for_redirect = url::Url::parse(&redirect_uri).expect("Invalid redirect URI");
-        base_url_for_redirect
-            .join(location)
-            .expect("Invalid redirect URL")
-    };
-    let code = redirect_url_parsed
-        .query_pairs()
-        .find(|(k, _)| k == "code")
-        .map(|(_, v)| v.to_string())
-        .expect("No code in redirect");
+    // Check if redirected to consent page
+    let location_str = location.to_string();
+    let (code, returned_state) = if location_str.starts_with("/consent") {
+        println!("Redirected to consent page, approving...");
 
-    let returned_state = redirect_url_parsed
-        .query_pairs()
-        .find(|(k, _)| k == "state")
-        .map(|(_, v)| v.to_string())
-        .expect("No state in redirect");
+        // Parse consent URL to extract parameters
+        let consent_url = if location_str.starts_with("http") {
+            url::Url::parse(&location_str).expect("Invalid consent URL")
+        } else {
+            url::Url::parse(&format!("{}{}", server.base_url(), location_str))
+                .expect("Invalid consent URL")
+        };
+
+        // Extract form parameters
+        let mut form_params = std::collections::HashMap::new();
+        for (k, v) in consent_url.query_pairs() {
+            form_params.insert(k.to_string(), v.to_string());
+        }
+
+        // Add approval action
+        form_params.insert("action".to_string(), "approve".to_string());
+
+        // Submit consent form
+        let consent_response = authenticated_client
+            .post(format!("{}/consent", server.base_url()))
+            .form(&form_params)
+            .send()
+            .expect("Failed to submit consent");
+
+        assert!(
+            consent_response.status().is_redirection(),
+            "Expected redirect after consent, got {}",
+            consent_response.status()
+        );
+
+        // Get the redirect location (should be back to /authorize or to the callback)
+        let consent_location = consent_response
+            .headers()
+            .get("location")
+            .expect("No location header after consent")
+            .to_str()
+            .expect("Invalid location header");
+
+        println!("After consent redirect: {}", consent_location);
+
+        // If redirected back to /authorize, follow it
+        let final_location = if consent_location.contains("/authorize") {
+            let reauth_response = authenticated_client
+                .get(format!("{}{}", server.base_url(), consent_location))
+                .send()
+                .expect("Failed to re-request authorization");
+
+            assert!(
+                reauth_response.status().is_redirection(),
+                "Expected redirect after re-auth, got {}",
+                reauth_response.status()
+            );
+
+            reauth_response
+                .headers()
+                .get("location")
+                .expect("No location header after re-auth")
+                .to_str()
+                .expect("Invalid location header")
+                .to_string()
+        } else {
+            consent_location.to_string()
+        };
+
+        // Parse the final redirect URL
+        let redirect_url_parsed = if final_location.starts_with("http") {
+            url::Url::parse(&final_location).expect("Invalid redirect URL")
+        } else {
+            let base = url::Url::parse(&redirect_uri).expect("Invalid redirect URI");
+            base.join(&final_location).expect("Invalid redirect URL")
+        };
+
+        let code = redirect_url_parsed
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.to_string())
+            .expect("No code in redirect");
+
+        let state = redirect_url_parsed
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.to_string())
+            .expect("No state in redirect");
+
+        (code, state)
+    } else {
+        // Direct redirect to callback (no consent needed)
+        let redirect_url_parsed = if location_str.starts_with("http") {
+            url::Url::parse(&location_str).expect("Invalid redirect URL")
+        } else {
+            let base = url::Url::parse(&redirect_uri).expect("Invalid redirect URI");
+            base.join(&location_str).expect("Invalid redirect URL")
+        };
+
+        let code = redirect_url_parsed
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.to_string())
+            .expect("No code in redirect");
+
+        let state = redirect_url_parsed
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.to_string())
+            .expect("No state in redirect");
+
+        (code, state)
+    };
 
     assert_eq!(returned_state, *csrf_token.secret());
 

@@ -36,7 +36,9 @@
       "mcp__context7__query-docs",
       "Bash(cargo expand:*)",
       "Bash(cargo tree:*)",
-      "Bash(cargo metadata:*)"
+      "Bash(cargo metadata:*)",
+      "Bash(ls:*)",
+      "Bash(sqlite3:*)"
     ],
     "deny": [],
     "ask": []

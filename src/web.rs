@@ -118,6 +118,7 @@ pub async fn serve(
         .route("/login/2fa", get(login_2fa_page))
         .route("/logout", get(logout))
         .route("/authorize", get(authorize))
+        .route("/consent", get(consent_page).post(consent_submit))
         .route("/token", post(token))
         .route("/revoke", post(token_revoke))
         .route("/userinfo", get(userinfo))
@@ -554,6 +555,86 @@ async fn authorize(
     let scope = q.scope.clone();
     let nonce = q.nonce.clone();
 
+    // Check if user has consented to this client/scope combination
+    // Skip consent check if:
+    // 1. BARYCENTER_SKIP_CONSENT env var is set (for testing)
+    // 2. prompt=consent is set (force re-consent)
+    let skip_consent = std::env::var("BARYCENTER_SKIP_CONSENT").is_ok();
+    let prompt_values: Vec<&str> = q
+        .prompt
+        .as_ref()
+        .map(|p| p.split_whitespace().collect())
+        .unwrap_or_default();
+    let force_consent = prompt_values.contains(&"consent");
+
+    if !skip_consent
+        && (force_consent
+            || !storage::has_consent(&state.db, &q.client_id, &subject, &scope)
+                .await
+                .unwrap_or(false))
+    {
+        // No consent exists or force re-consent - redirect to consent page
+        // If prompt=none, return error instead of redirecting
+        if prompt_values.contains(&"none") {
+            return oidc_error_redirect(&q.redirect_uri, q.state.as_deref(), "consent_required")
+                .into_response();
+        }
+
+        // Get client name for the consent page
+        let client_name = match storage::get_client(&state.db, &q.client_id).await {
+            Ok(Some(client)) => client.client_name,
+            _ => None,
+        };
+
+        // Build consent URL with all OAuth parameters
+        let mut consent_params = vec![
+            ("client_id", q.client_id.clone()),
+            ("scope", scope.clone()),
+            ("redirect_uri", q.redirect_uri.clone()),
+            ("response_type", q.response_type.clone()),
+            ("code_challenge", code_challenge.clone()),
+            ("code_challenge_method", ccm.clone()),
+        ];
+
+        if let Some(name) = client_name {
+            consent_params.push(("client_name", name));
+        }
+        if let Some(s) = &q.state {
+            consent_params.push(("state", s.clone()));
+        }
+        if let Some(n) = &nonce {
+            consent_params.push(("nonce", n.clone()));
+        }
+        if let Some(p) = &q.prompt {
+            consent_params.push(("prompt", p.clone()));
+        }
+        if let Some(d) = &q.display {
+            consent_params.push(("display", d.clone()));
+        }
+        if let Some(ui) = &q.ui_locales {
+            consent_params.push(("ui_locales", ui.clone()));
+        }
+        if let Some(cl) = &q.claims_locales {
+            consent_params.push(("claims_locales", cl.clone()));
+        }
+        if let Some(ma) = &q.max_age {
+            consent_params.push(("max_age", ma.clone()));
+        }
+        if let Some(acr) = &q.acr_values {
+            consent_params.push(("acr_values", acr.clone()));
+        }
+
+        let consent_url = url_append_query(
+            "/consent".to_string(),
+            &consent_params
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect::<Vec<_>>(),
+        );
+
+        return Redirect::temporary(&consent_url).into_response();
+    }
+
     // Handle different response types
     match q.response_type.as_str() {
         "code" => {
@@ -709,6 +790,249 @@ async fn authorize(
         )
         .into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsentQuery {
+    client_id: String,
+    client_name: Option<String>,
+    scope: String,
+    redirect_uri: String,
+    response_type: String,
+    state: Option<String>,
+    nonce: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+    prompt: Option<String>,
+    display: Option<String>,
+    ui_locales: Option<String>,
+    claims_locales: Option<String>,
+    max_age: Option<String>,
+    acr_values: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsentForm {
+    client_id: String,
+    scope: String,
+    redirect_uri: String,
+    response_type: String,
+    state: Option<String>,
+    nonce: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+    action: String, // "approve" or "deny"
+}
+
+async fn consent_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ConsentQuery>,
+) -> impl IntoResponse {
+    // Verify user is authenticated
+    let session = match SessionCookie::from_headers(&headers) {
+        Some(cookie) => match storage::get_session(&state.db, &cookie.session_id).await {
+            Ok(Some(sess)) if sess.expires_at > chrono::Utc::now().timestamp() => sess,
+            _ => {
+                // Session expired or invalid - redirect to login
+                let return_to = format!(
+                    "/consent?client_id={}&scope={}&redirect_uri={}&response_type={}&code_challenge={}&code_challenge_method={}{}",
+                    urlencoded(&q.client_id),
+                    urlencoded(&q.scope),
+                    urlencoded(&q.redirect_uri),
+                    urlencoded(&q.response_type),
+                    urlencoded(&q.code_challenge.as_ref().unwrap_or(&String::new())),
+                    urlencoded(&q.code_challenge_method.as_ref().unwrap_or(&String::new())),
+                    q.state.as_ref().map(|s| format!("&state={}", urlencoded(s))).unwrap_or_default()
+                );
+                return Redirect::temporary(&format!("/login?return_to={}", urlencoded(&return_to)))
+                    .into_response();
+            }
+        },
+        None => {
+            // No session cookie - redirect to login
+            let return_to = format!(
+                "/consent?client_id={}&scope={}&redirect_uri={}&response_type={}&code_challenge={}&code_challenge_method={}{}",
+                urlencoded(&q.client_id),
+                urlencoded(&q.scope),
+                urlencoded(&q.redirect_uri),
+                urlencoded(&q.response_type),
+                urlencoded(&q.code_challenge.as_ref().unwrap_or(&String::new())),
+                urlencoded(&q.code_challenge_method.as_ref().unwrap_or(&String::new())),
+                q.state.as_ref().map(|s| format!("&state={}", urlencoded(s))).unwrap_or_default()
+            );
+            return Redirect::temporary(&format!("/login?return_to={}", urlencoded(&return_to)))
+                .into_response();
+        }
+    };
+
+    // Get username for display
+    let username = match storage::get_user_by_subject(&state.db, &session.subject).await {
+        Ok(Some(user)) => user.username,
+        _ => "User".to_string(),
+    };
+
+    // Get client name
+    let client_name = if let Some(name) = q.client_name {
+        name
+    } else {
+        match storage::get_client(&state.db, &q.client_id).await {
+            Ok(Some(client)) => client.client_name.unwrap_or_else(|| q.client_id.clone()),
+            _ => q.client_id.clone(),
+        }
+    };
+
+    // Serve the static consent.html file with query parameters
+    match tokio::fs::read_to_string("static/consent.html").await {
+        Ok(html) => {
+            // Build query string for the consent page
+            let mut params = vec![
+                ("client_id", q.client_id.clone()),
+                ("client_name", client_name),
+                ("scope", q.scope.clone()),
+                ("redirect_uri", q.redirect_uri.clone()),
+                ("response_type", q.response_type.clone()),
+                ("username", username),
+            ];
+
+            if let Some(s) = &q.state {
+                params.push(("state", s.clone()));
+            }
+            if let Some(n) = &q.nonce {
+                params.push(("nonce", n.clone()));
+            }
+            if let Some(cc) = &q.code_challenge {
+                params.push(("code_challenge", cc.clone()));
+            }
+            if let Some(ccm) = &q.code_challenge_method {
+                params.push(("code_challenge_method", ccm.clone()));
+            }
+
+            // Append query parameters to HTML
+            let query_string = serde_urlencoded::to_string(&params).unwrap_or_default();
+            let html_with_params = if html.contains("</body>") {
+                html.replace("</body>", &format!("<script>window.location.search = '?{}';</script></body>", query_string))
+            } else {
+                html
+            };
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/html; charset=utf-8")
+                .body(Body::from(html_with_params))
+                .unwrap()
+                .into_response()
+        }
+        Err(_) => {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Consent page not found"))
+                .unwrap()
+                .into_response()
+        }
+    }
+}
+
+async fn consent_submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ConsentForm>,
+) -> impl IntoResponse {
+    // Verify user is authenticated
+    let session = match SessionCookie::from_headers(&headers) {
+        Some(cookie) => match storage::get_session(&state.db, &cookie.session_id).await {
+            Ok(Some(sess)) if sess.expires_at > chrono::Utc::now().timestamp() => sess,
+            _ => {
+                return oauth_error_redirect(
+                    &form.redirect_uri,
+                    form.state.as_deref(),
+                    "access_denied",
+                    "session expired",
+                )
+                .into_response();
+            }
+        },
+        None => {
+            return oauth_error_redirect(
+                &form.redirect_uri,
+                form.state.as_deref(),
+                "access_denied",
+                "not authenticated",
+            )
+            .into_response();
+        }
+    };
+
+    // Handle deny action
+    if form.action == "deny" {
+        return oauth_error_redirect(
+            &form.redirect_uri,
+            form.state.as_deref(),
+            "access_denied",
+            "user denied consent",
+        )
+        .into_response();
+    }
+
+    // Handle approve action
+    if form.action == "approve" {
+        // Store consent (no expiration - lasts until revoked)
+        if let Err(e) = storage::grant_consent(
+            &state.db,
+            &form.client_id,
+            &session.subject,
+            &form.scope,
+            None, // No expiration
+        )
+        .await
+        {
+            tracing::error!("Failed to store consent: {}", e);
+            return oauth_error_redirect(
+                &form.redirect_uri,
+                form.state.as_deref(),
+                "server_error",
+                "failed to store consent",
+            )
+            .into_response();
+        }
+
+        // Redirect back to /authorize with all parameters to complete the flow
+        let mut params = vec![
+            ("client_id", form.client_id.clone()),
+            ("redirect_uri", form.redirect_uri.clone()),
+            ("response_type", form.response_type.clone()),
+            ("scope", form.scope.clone()),
+        ];
+
+        if let Some(s) = &form.state {
+            params.push(("state", s.clone()));
+        }
+        if let Some(n) = &form.nonce {
+            params.push(("nonce", n.clone()));
+        }
+        if let Some(cc) = &form.code_challenge {
+            params.push(("code_challenge", cc.clone()));
+        }
+        if let Some(ccm) = &form.code_challenge_method {
+            params.push(("code_challenge_method", ccm.clone()));
+        }
+
+        let authorize_url = url_append_query(
+            "/authorize".to_string(),
+            &params.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>(),
+        );
+
+        return Redirect::temporary(&authorize_url).into_response();
+    }
+
+    // Invalid action
+    oauth_error_redirect(
+        &form.redirect_uri,
+        form.state.as_deref(),
+        "invalid_request",
+        "invalid action",
+    )
+    .into_response()
 }
 
 // Helper function to build ID token

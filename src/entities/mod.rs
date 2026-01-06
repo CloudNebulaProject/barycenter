@@ -1,6 +1,7 @@
 pub mod access_token;
 pub mod auth_code;
 pub mod client;
+pub mod consent;
 pub mod job_execution;
 pub mod passkey;
 pub mod property;
@@ -12,6 +13,7 @@ pub mod webauthn_challenge;
 pub use access_token::Entity as AccessToken;
 pub use auth_code::Entity as AuthCode;
 pub use client::Entity as Client;
+pub use consent::Entity as Consent;
 pub use job_execution::Entity as JobExecution;
 pub use passkey::Entity as Passkey;
 pub use property::Entity as Property;
