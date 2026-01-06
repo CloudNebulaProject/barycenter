@@ -1,7 +1,7 @@
 use async_graphql::*;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    QuerySelect, Set,
 };
 use std::sync::Arc;
 
@@ -171,6 +171,11 @@ impl AdminQuery {
                 name: "cleanup_expired_challenges".to_string(),
                 description: "Clean up expired WebAuthn challenges".to_string(),
                 schedule: "Every 5 minutes".to_string(),
+            },
+            JobInfo {
+                name: "cleanup_expired_device_codes".to_string(),
+                description: "Clean up expired device authorization codes".to_string(),
+                schedule: "Hourly at :45".to_string(),
             },
         ])
     }

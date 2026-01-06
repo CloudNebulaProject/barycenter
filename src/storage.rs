@@ -3,7 +3,7 @@ use crate::errors::CrabError;
 use crate::settings::Database as DbCfg;
 use base64ct::Encoding;
 use chrono::Utc;
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter,
     QueryOrder, Set,
@@ -90,6 +90,25 @@ pub struct RefreshToken {
     pub expires_at: i64,
     pub revoked: i64,
     pub parent_token: Option<String>, // For token rotation tracking
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub client_id: String,
+    pub client_name: Option<String>,
+    pub scope: String,
+    pub device_info: Option<String>, // JSON: {ip_address, user_agent}
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub last_poll_at: Option<i64>,
+    pub interval: i64,
+    pub status: String, // "pending" | "approved" | "denied" | "consumed"
+    pub subject: Option<String>,
+    pub auth_time: Option<i64>,
+    pub amr: Option<String>, // JSON array: ["pwd", "hwk"]
+    pub acr: Option<String>, // "aal1" or "aal2"
 }
 
 pub async fn init(cfg: &DbCfg) -> Result<DatabaseConnection, CrabError> {
@@ -350,6 +369,25 @@ fn random_id() -> String {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
     base64ct::Base64UrlUnpadded::encode_string(&bytes)
+}
+
+/// Generate 8-character base-20 user code in format XXXX-XXXX
+/// Alphabet: BCDFGHJKLMNPQRSTVWXZ (consonants only, no ambiguous chars)
+/// Entropy: 20^8 = ~43 bits
+fn generate_user_code() -> String {
+    const ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
+    let mut rng = rand::thread_rng();
+    let mut code = String::with_capacity(9);
+
+    for i in 0..8 {
+        if i == 4 {
+            code.push('-');
+        }
+        let idx = rng.gen_range(0..ALPHABET.len());
+        code.push(ALPHABET[idx] as char);
+    }
+
+    code
 }
 
 // User management functions
@@ -1184,6 +1222,305 @@ pub async fn revoke_consents_for_client(
     }
 
     Ok(())
+}
+
+// Device Authorization Grant (RFC 8628) functions
+
+/// Create a new device authorization code
+pub async fn create_device_code(
+    db: &DatabaseConnection,
+    client_id: &str,
+    client_name: Option<String>,
+    scope: &str,
+    device_info: Option<String>,
+) -> Result<DeviceCode, CrabError> {
+    let device_code = random_id();
+    let user_code = generate_user_code();
+    let now = Utc::now().timestamp();
+    let expires_at = now + 1800; // 30 minutes
+
+    let device_code_model = entities::device_code::ActiveModel {
+        device_code: Set(device_code.clone()),
+        user_code: Set(user_code.clone()),
+        client_id: Set(client_id.to_string()),
+        client_name: Set(client_name.clone()),
+        scope: Set(scope.to_string()),
+        device_info: Set(device_info.clone()),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+        last_poll_at: Set(None),
+        interval: Set(5),
+        status: Set("pending".to_string()),
+        subject: Set(None),
+        auth_time: Set(None),
+        amr: Set(None),
+        acr: Set(None),
+    };
+
+    device_code_model.insert(db).await?;
+
+    Ok(DeviceCode {
+        device_code,
+        user_code,
+        client_id: client_id.to_string(),
+        client_name,
+        scope: scope.to_string(),
+        device_info,
+        created_at: now,
+        expires_at,
+        last_poll_at: None,
+        interval: 5,
+        status: "pending".to_string(),
+        subject: None,
+        auth_time: None,
+        amr: None,
+        acr: None,
+    })
+}
+
+/// Get device code by device_code
+pub async fn get_device_code(
+    db: &DatabaseConnection,
+    device_code: &str,
+) -> Result<Option<DeviceCode>, CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    let result = Entity::find()
+        .filter(Column::DeviceCode.eq(device_code))
+        .one(db)
+        .await?;
+
+    match result {
+        Some(dc) => {
+            // Check if expired
+            if dc.expires_at < now {
+                return Ok(None);
+            }
+
+            Ok(Some(DeviceCode {
+                device_code: dc.device_code,
+                user_code: dc.user_code,
+                client_id: dc.client_id,
+                client_name: dc.client_name,
+                scope: dc.scope,
+                device_info: dc.device_info,
+                created_at: dc.created_at,
+                expires_at: dc.expires_at,
+                last_poll_at: dc.last_poll_at,
+                interval: dc.interval,
+                status: dc.status,
+                subject: dc.subject,
+                auth_time: dc.auth_time,
+                amr: dc.amr,
+                acr: dc.acr,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Get device code by user_code
+pub async fn get_device_code_by_user_code(
+    db: &DatabaseConnection,
+    user_code: &str,
+) -> Result<Option<DeviceCode>, CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    let result = Entity::find()
+        .filter(Column::UserCode.eq(user_code))
+        .one(db)
+        .await?;
+
+    match result {
+        Some(dc) => {
+            // Check if expired
+            if dc.expires_at < now {
+                return Ok(None);
+            }
+
+            Ok(Some(DeviceCode {
+                device_code: dc.device_code,
+                user_code: dc.user_code,
+                client_id: dc.client_id,
+                client_name: dc.client_name,
+                scope: dc.scope,
+                device_info: dc.device_info,
+                created_at: dc.created_at,
+                expires_at: dc.expires_at,
+                last_poll_at: dc.last_poll_at,
+                interval: dc.interval,
+                status: dc.status,
+                subject: dc.subject,
+                auth_time: dc.auth_time,
+                amr: dc.amr,
+                acr: dc.acr,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Update device code polling metadata
+pub async fn update_device_code_poll(
+    db: &DatabaseConnection,
+    device_code: &str,
+) -> Result<(), CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    if let Some(dc) = Entity::find()
+        .filter(Column::DeviceCode.eq(device_code))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::device_code::ActiveModel = dc.into();
+        active.last_poll_at = Set(Some(now));
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
+/// Approve device code with user authentication context
+pub async fn approve_device_code(
+    db: &DatabaseConnection,
+    device_code: &str,
+    subject: &str,
+    auth_time: i64,
+    amr: Option<String>,
+    acr: Option<String>,
+) -> Result<(), CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    if let Some(dc) = Entity::find()
+        .filter(Column::DeviceCode.eq(device_code))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::device_code::ActiveModel = dc.into();
+        active.status = Set("approved".to_string());
+        active.subject = Set(Some(subject.to_string()));
+        active.auth_time = Set(Some(auth_time));
+        active.amr = Set(amr);
+        active.acr = Set(acr);
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
+/// Deny device code
+pub async fn deny_device_code(
+    db: &DatabaseConnection,
+    device_code: &str,
+) -> Result<(), CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    if let Some(dc) = Entity::find()
+        .filter(Column::DeviceCode.eq(device_code))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::device_code::ActiveModel = dc.into();
+        active.status = Set("denied".to_string());
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
+/// Consume device code (mark as used) and return its data
+pub async fn consume_device_code(
+    db: &DatabaseConnection,
+    device_code: &str,
+) -> Result<Option<DeviceCode>, CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    if let Some(dc) = Entity::find()
+        .filter(Column::DeviceCode.eq(device_code))
+        .one(db)
+        .await?
+    {
+        // Check if expired
+        if dc.expires_at < now {
+            return Ok(None);
+        }
+
+        // Check if status is approved
+        if dc.status != "approved" {
+            return Ok(None);
+        }
+
+        // Mark as consumed
+        let mut active: entities::device_code::ActiveModel = dc.clone().into();
+        active.status = Set("consumed".to_string());
+        active.update(db).await?;
+
+        // Return the device code data
+        Ok(Some(DeviceCode {
+            device_code: dc.device_code,
+            user_code: dc.user_code,
+            client_id: dc.client_id,
+            client_name: dc.client_name,
+            scope: dc.scope,
+            device_info: dc.device_info,
+            created_at: dc.created_at,
+            expires_at: dc.expires_at,
+            last_poll_at: dc.last_poll_at,
+            interval: dc.interval,
+            status: "consumed".to_string(),
+            subject: dc.subject,
+            auth_time: dc.auth_time,
+            amr: dc.amr,
+            acr: dc.acr,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Increment device code polling interval by 5 seconds (for slow_down)
+pub async fn increment_device_code_interval(
+    db: &DatabaseConnection,
+    device_code: &str,
+) -> Result<(), CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    if let Some(dc) = Entity::find()
+        .filter(Column::DeviceCode.eq(device_code))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::device_code::ActiveModel = dc.into();
+        active.interval = Set(active.interval.clone().unwrap() + 5);
+        active.last_poll_at = Set(Some(now));
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
+/// Cleanup expired device codes
+pub async fn cleanup_expired_device_codes(db: &DatabaseConnection) -> Result<u64, CrabError> {
+    use entities::device_code::{Column, Entity};
+
+    let now = Utc::now().timestamp();
+
+    let result = Entity::delete_many()
+        .filter(Column::ExpiresAt.lt(now))
+        .exec(db)
+        .await?;
+
+    Ok(result.rows_affected)
 }
 
 #[cfg(test)]

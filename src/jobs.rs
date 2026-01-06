@@ -123,13 +123,49 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         .await
         .map_err(|e| CrabError::Other(format!("Failed to add cleanup challenges job: {}", e)))?;
 
+    let db_clone = db.clone();
+
+    // Cleanup expired device codes job - runs every hour at :45
+    let cleanup_device_codes_job = Job::new_async("0 45 * * * *", move |_uuid, _l| {
+        let db = db_clone.clone();
+        Box::pin(async move {
+            info!("Running cleanup_expired_device_codes job");
+            let execution_id = start_job_execution(&db, "cleanup_expired_device_codes")
+                .await
+                .ok();
+
+            match storage::cleanup_expired_device_codes(&db).await {
+                Ok(count) => {
+                    info!("Cleaned up {} expired device codes", count);
+                    if let Some(id) = execution_id {
+                        let _ =
+                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to cleanup expired device codes: {}", e);
+                    if let Some(id) = execution_id {
+                        let _ =
+                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
+                    }
+                }
+            }
+        })
+    })
+    .map_err(|e| CrabError::Other(format!("Failed to create cleanup device codes job: {}", e)))?;
+
+    sched
+        .add(cleanup_device_codes_job)
+        .await
+        .map_err(|e| CrabError::Other(format!("Failed to add cleanup device codes job: {}", e)))?;
+
     // Start the scheduler
     sched
         .start()
         .await
         .map_err(|e| CrabError::Other(format!("Failed to start job scheduler: {}", e)))?;
 
-    info!("Job scheduler started with {} jobs", 3);
+    info!("Job scheduler started with {} jobs", 4);
 
     Ok(sched)
 }
@@ -197,6 +233,7 @@ pub async fn trigger_job_manually(
         "cleanup_expired_sessions" => storage::cleanup_expired_sessions(db).await,
         "cleanup_expired_refresh_tokens" => storage::cleanup_expired_refresh_tokens(db).await,
         "cleanup_expired_challenges" => storage::cleanup_expired_challenges(db).await,
+        "cleanup_expired_device_codes" => storage::cleanup_expired_device_codes(db).await,
         _ => {
             return Err(CrabError::Other(format!("Unknown job name: {}", job_name)));
         }

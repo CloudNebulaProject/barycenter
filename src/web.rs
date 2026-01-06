@@ -26,6 +26,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tower_http::services::ServeDir;
+use urlencoding;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -122,6 +123,11 @@ pub async fn serve(
         .route("/token", post(token))
         .route("/revoke", post(token_revoke))
         .route("/userinfo", get(userinfo))
+        // Device Authorization Grant (RFC 8628) endpoints
+        .route("/device_authorization", post(device_authorization))
+        .route("/device", get(device_page))
+        .route("/device/verify", post(device_verify))
+        .route("/device/consent", post(device_consent))
         // WebAuthn / Passkey endpoints
         .route("/webauthn/register/start", post(passkey_register_start))
         .route("/webauthn/register/finish", post(passkey_register_finish))
@@ -200,6 +206,7 @@ async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
         "issuer": issuer,
         "authorization_endpoint": format!("{}/authorize", issuer),
         "token_endpoint": format!("{}/token", issuer),
+        "device_authorization_endpoint": format!("{}/device_authorization", issuer),
         "jwks_uri": format!("{}/.well-known/jwks.json", issuer),
         "registration_endpoint": format!("{}/connect/register", issuer),
         "userinfo_endpoint": format!("{}/userinfo", issuer),
@@ -208,7 +215,7 @@ async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": [state.settings.keys.alg],
         // Additional recommended metadata for better interoperability
-        "grant_types_supported": ["authorization_code", "refresh_token", "implicit"],
+        "grant_types_supported": ["authorization_code", "refresh_token", "implicit", "urn:ietf:params:oauth:grant-type:device_code"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
         "code_challenge_methods_supported": ["S256"],
         "claims_supported": [
@@ -1114,6 +1121,7 @@ struct TokenRequest {
     client_secret: Option<String>,
     code_verifier: Option<String>,
     refresh_token: Option<String>,
+    device_code: Option<String>, // For device_code grant
 }
 
 #[derive(Debug, Serialize)]
@@ -1156,6 +1164,9 @@ async fn token(
     match req.grant_type.as_str() {
         "authorization_code" => handle_authorization_code_grant(state, headers, req).await,
         "refresh_token" => handle_refresh_token_grant(state, headers, req).await,
+        "urn:ietf:params:oauth:grant-type:device_code" => {
+            handle_device_code_grant(state, headers, req).await
+        }
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error":"unsupported_grant_type"})),
@@ -1578,6 +1589,247 @@ async fn handle_refresh_token_grant(
         expires_in: 3600,
         id_token: Some(id_token),
         refresh_token: new_refresh_token,
+    };
+
+    // Add Cache-Control: no-store as required by OAuth 2.0 and OIDC specs
+    json_with_headers(
+        StatusCode::OK,
+        serde_json::to_value(resp).unwrap(),
+        &[
+            ("cache-control", "no-store".to_string()),
+            ("pragma", "no-cache".to_string()),
+        ],
+    )
+}
+
+async fn handle_device_code_grant(
+    state: AppState,
+    _headers: HeaderMap,
+    req: TokenRequest,
+) -> Response {
+    // Require device_code parameter
+    let device_code_str = match req.device_code {
+        Some(dc) => dc,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_request",
+                    "error_description": "device_code required"
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Require client_id (device flow uses public clients, so no secret required)
+    let client_id = match req.client_id {
+        Some(cid) => cid,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_request",
+                    "error_description": "client_id required"
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Get device code
+    let device_code = match storage::get_device_code(&state.db, &device_code_str).await {
+        Ok(Some(dc)) => dc,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "device_code not found or expired"
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Verify device_code bound to same client_id
+    if device_code.client_id != client_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_grant",
+                "error_description": "device_code not bound to this client"
+            })),
+        )
+            .into_response();
+    }
+
+    // Rate limiting: check if polling too fast
+    if let Some(last_poll) = device_code.last_poll_at {
+        let now = chrono::Utc::now().timestamp();
+        let elapsed = now - last_poll;
+
+        if elapsed < device_code.interval {
+            // Polling too fast - increment interval and return slow_down
+            let _ = storage::increment_device_code_interval(&state.db, &device_code_str).await;
+
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "slow_down",
+                    "error_description": "Polling too frequently"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // Update last_poll_at
+    let _ = storage::update_device_code_poll(&state.db, &device_code_str).await;
+
+    // Check status
+    match device_code.status.as_str() {
+        "pending" => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "authorization_pending",
+                    "error_description": "User has not yet authorized the device"
+                })),
+            )
+                .into_response()
+        }
+        "denied" => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "access_denied",
+                    "error_description": "User denied the authorization request"
+                })),
+            )
+                .into_response()
+        }
+        "consumed" => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "device_code already used"
+                })),
+            )
+                .into_response()
+        }
+        "approved" => {
+            // Continue to token issuance
+        }
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "server_error",
+                    "error_description": "Unknown device_code status"
+                })),
+            )
+                .into_response()
+        }
+    }
+
+    // Consume device code
+    let consumed_device_code = match storage::consume_device_code(&state.db, &device_code_str).await
+    {
+        Ok(Some(dc)) => dc,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "Failed to consume device_code"
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let subject = consumed_device_code.subject.unwrap();
+
+    // Issue access token
+    let access = match storage::issue_access_token(
+        &state.db,
+        &client_id,
+        &subject,
+        &consumed_device_code.scope,
+        3600,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "server_error",
+                    "details": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Build ID Token with profile claims
+    let id_token = match build_id_token(
+        &state,
+        &client_id,
+        &subject,
+        None, // No nonce for device flow
+        consumed_device_code.auth_time,
+        Some(&access.token),
+        consumed_device_code.amr.as_deref(),
+        consumed_device_code.acr.as_deref(),
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "server_error",
+                    "details": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    // Issue refresh token if offline_access scope requested
+    let refresh_token_opt = if consumed_device_code
+        .scope
+        .split_whitespace()
+        .any(|s| s == "offline_access")
+    {
+        match storage::issue_refresh_token(
+            &state.db,
+            &client_id,
+            &subject,
+            &consumed_device_code.scope,
+            2592000, // 30 days
+            None,    // No parent token for device flow
+        )
+        .await
+        {
+            Ok(rt) => Some(rt.token),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    let resp = TokenResponse {
+        access_token: access.token,
+        token_type: "bearer".into(),
+        expires_in: 3600,
+        id_token: Some(id_token),
+        refresh_token: refresh_token_opt,
     };
 
     // Add Cache-Control: no-store as required by OAuth 2.0 and OIDC specs
@@ -2947,4 +3199,427 @@ async fn update_passkey_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ========================================
+// Device Authorization Grant (RFC 8628)
+// ========================================
+
+#[derive(Deserialize)]
+struct DeviceAuthorizationRequest {
+    client_id: Option<String>,
+    client_name: Option<String>,
+    scope: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: String,
+    expires_in: i64,
+    interval: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret: Option<String>,
+}
+
+/// POST /device_authorization - RFC 8628 Device Authorization Endpoint
+async fn device_authorization(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(req): Form<DeviceAuthorizationRequest>,
+) -> Result<Json<DeviceAuthorizationResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Extract device info
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    let ip_address = headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    let device_info = serde_json::json!({
+        "ip_address": ip_address,
+        "user_agent": user_agent,
+    })
+    .to_string();
+
+    // Determine client_id (auto-register if not provided)
+    let (client_id, client_secret, client_name, auto_registered) = if let Some(cid) = req.client_id
+    {
+        // Validate existing client
+        let client = storage::get_client(&state.db, &cid).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "server_error",
+                    "error_description": format!("Database error: {}", e)
+                })),
+            )
+        })?;
+
+        if client.is_none() {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "invalid_client",
+                    "error_description": "Client not found"
+                })),
+            ));
+        }
+
+        let client = client.unwrap();
+        (client.client_id, client.client_secret, client.client_name, false)
+    } else {
+        // Auto-register new client
+        let new_client_name = req.client_name.unwrap_or_else(|| "Auto-registered Device".to_string());
+        let new_client = storage::NewClient {
+            client_name: Some(new_client_name.clone()),
+            redirect_uris: vec![], // Device flow doesn't use redirect URIs
+        };
+
+        let client = storage::create_client(&state.db, new_client)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": "server_error",
+                        "error_description": format!("Failed to create client: {}", e)
+                    })),
+                )
+            })?;
+
+        (client.client_id, client.client_secret, Some(new_client_name), true)
+    };
+
+    // Validate scope (must include "openid" for OIDC)
+    let scope = req.scope.unwrap_or_else(|| "openid".to_string());
+    if !scope.split_whitespace().any(|s| s == "openid") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_scope",
+                "error_description": "Scope must include 'openid'"
+            })),
+        ));
+    }
+
+    // Create device code
+    let device_code = storage::create_device_code(
+        &state.db,
+        &client_id,
+        client_name,
+        &scope,
+        Some(device_info),
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "server_error",
+                "error_description": format!("Failed to create device code: {}", e)
+            })),
+        )
+    })?;
+
+    // Build URIs
+    let issuer = state.settings.issuer();
+    let verification_uri = format!("{}/device", issuer);
+    let verification_uri_complete = format!("{}/device?user_code={}", issuer, device_code.user_code);
+
+    Ok(Json(DeviceAuthorizationResponse {
+        device_code: device_code.device_code,
+        user_code: device_code.user_code,
+        verification_uri,
+        verification_uri_complete,
+        expires_in: 1800,
+        interval: 5,
+        client_id: if auto_registered { Some(client_id) } else { None },
+        client_secret: if auto_registered { Some(client_secret) } else { None },
+    }))
+}
+
+#[derive(Deserialize)]
+struct DevicePageQuery {
+    user_code: Option<String>,
+}
+
+/// GET /device - Device verification page
+async fn device_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<DevicePageQuery>,
+) -> Result<Html<String>, Redirect> {
+    // Check if user has session
+    let session_cookie = SessionCookie::from_headers(&headers);
+    if let Some(cookie) = session_cookie {
+        if let Ok(Some(_session)) = storage::get_session(&state.db, &cookie.session_id).await {
+            // User is authenticated, show form
+            let prefilled_code = query.user_code.as_deref().unwrap_or("");
+
+            let html = format!(
+                r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Verification</title>
+    <style>
+        body {{ font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+        .container {{ background: #f5f5f5; padding: 30px; border-radius: 8px; }}
+        h1 {{ margin-top: 0; }}
+        input {{ font-size: 18px; padding: 10px; width: 100%; box-sizing: border-box; margin: 10px 0; text-transform: uppercase; }}
+        button {{ background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 4px; cursor: pointer; }}
+        button:hover {{ background: #0056b3; }}
+        .instructions {{ background: white; padding: 15px; border-left: 4px solid #007bff; margin-bottom: 20px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Device Verification</h1>
+        <div class="instructions">
+            <p>Enter the code shown on your device to authorize access.</p>
+            <p>Format: <strong>XXXX-XXXX</strong> (8 characters)</p>
+        </div>
+        <form method="POST" action="/device/verify">
+            <input type="text" name="user_code" placeholder="Enter code (e.g., WDJB-MJHT)" value="{}" maxlength="9" pattern="[A-Z]{{4}}-[A-Z]{{4}}" required autofocus>
+            <button type="submit">Verify Device</button>
+        </form>
+    </div>
+</body>
+</html>"#,
+                prefilled_code
+            );
+
+            return Ok(Html(html));
+        }
+    }
+
+    // No session, redirect to login
+    let return_to = if let Some(code) = query.user_code {
+        format!("/login?return_to={}", urlencoding::encode(&format!("/device?user_code={}", code)))
+    } else {
+        "/login?return_to=/device".to_string()
+    };
+
+    Err(Redirect::to(&return_to))
+}
+
+#[derive(Deserialize)]
+struct DeviceVerifyRequest {
+    user_code: String,
+}
+
+/// POST /device/verify - Verify user code and show consent page
+async fn device_verify(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(req): Form<DeviceVerifyRequest>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    // Require authenticated session
+    let session_cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "Not authenticated".to_string()))?;
+
+    let _session = storage::get_session(&state.db, &session_cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Session not found".to_string()))?;
+
+    // Lookup device code by user_code
+    let device_code = storage::get_device_code_by_user_code(&state.db, &req.user_code.to_uppercase())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Device code not found or expired".to_string()))?;
+
+    // Parse device_info
+    let device_info: serde_json::Value = serde_json::from_str(device_code.device_info.as_deref().unwrap_or("{}"))
+        .unwrap_or(json!({}));
+
+    let ip_address = device_info["ip_address"].as_str().unwrap_or("Unknown");
+    let user_agent = device_info["user_agent"].as_str().unwrap_or("Unknown");
+
+    // Render consent page
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authorize Device</title>
+    <style>
+        body {{ font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+        .container {{ background: #f5f5f5; padding: 30px; border-radius: 8px; }}
+        h1 {{ margin-top: 0; }}
+        .device-info {{ background: white; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+        .device-info dt {{ font-weight: bold; margin-top: 10px; }}
+        .device-info dd {{ margin-left: 0; color: #555; }}
+        .code-display {{ background: #007bff; color: white; padding: 15px; text-align: center; font-size: 24px; font-family: monospace; border-radius: 4px; margin: 20px 0; letter-spacing: 2px; }}
+        .buttons {{ display: flex; gap: 10px; margin-top: 20px; }}
+        button {{ flex: 1; padding: 12px; font-size: 16px; border: none; border-radius: 4px; cursor: pointer; }}
+        .approve {{ background: #28a745; color: white; }}
+        .approve:hover {{ background: #218838; }}
+        .deny {{ background: #dc3545; color: white; }}
+        .deny:hover {{ background: #c82333; }}
+        .warning {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 20px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Authorize Device</h1>
+        <div class="warning">
+            <strong>Verify this is your device!</strong> Only approve if you recognize the device information below.
+        </div>
+        <div class="code-display">{}</div>
+        <div class="device-info">
+            <dl>
+                <dt>Client:</dt>
+                <dd>{}</dd>
+                <dt>Requested Scopes:</dt>
+                <dd>{}</dd>
+                <dt>IP Address:</dt>
+                <dd>{}</dd>
+                <dt>User Agent:</dt>
+                <dd>{}</dd>
+            </dl>
+        </div>
+        <div class="buttons">
+            <form method="POST" action="/device/consent" style="flex: 1;">
+                <input type="hidden" name="user_code" value="{}">
+                <input type="hidden" name="approved" value="true">
+                <button type="submit" class="approve">Approve</button>
+            </form>
+            <form method="POST" action="/device/consent" style="flex: 1;">
+                <input type="hidden" name="user_code" value="{}">
+                <input type="hidden" name="approved" value="false">
+                <button type="submit" class="deny">Deny</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>"#,
+        device_code.user_code,
+        device_code.client_name.as_deref().unwrap_or("Unknown Application"),
+        device_code.scope,
+        ip_address,
+        user_agent,
+        device_code.user_code,
+        device_code.user_code
+    );
+
+    Ok(Html(html))
+}
+
+#[derive(Deserialize)]
+struct DeviceConsentRequest {
+    user_code: String,
+    #[serde(default)]
+    approved: bool,
+}
+
+/// POST /device/consent - Handle device authorization approval/denial
+async fn device_consent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(req): Form<DeviceConsentRequest>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    // Require authenticated session
+    let session_cookie = SessionCookie::from_headers(&headers)
+        .ok_or((StatusCode::UNAUTHORIZED, "Not authenticated".to_string()))?;
+
+    let session = storage::get_session(&state.db, &session_cookie.session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Session not found".to_string()))?;
+
+    // Lookup device code by user_code
+    let device_code = storage::get_device_code_by_user_code(&state.db, &req.user_code.to_uppercase())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Device code not found or expired".to_string()))?;
+
+    // TODO: Check 2FA requirements (admin-enforced, high-value scopes, max_age)
+    // For now, we'll skip 2FA checks and proceed directly
+
+    if req.approved {
+        // Approve the device code
+        storage::approve_device_code(
+            &state.db,
+            &device_code.device_code,
+            &session.subject,
+            session.auth_time,
+            session.amr,
+            session.acr,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Show success page
+        Ok(Html(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Approved</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        .container { background: #d4edda; border: 1px solid #c3e6cb; padding: 30px; border-radius: 8px; text-align: center; }
+        h1 { color: #155724; margin-top: 0; }
+        p { color: #155724; font-size: 18px; }
+        .checkmark { font-size: 48px; color: #28a745; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="checkmark">✓</div>
+        <h1>Device Approved</h1>
+        <p>You can now return to your device and continue.</p>
+    </div>
+</body>
+</html>"#
+                .to_string(),
+        ))
+    } else {
+        // Deny the device code
+        storage::deny_device_code(&state.db, &device_code.device_code)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Show denial page
+        Ok(Html(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Denied</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        .container { background: #f8d7da; border: 1px solid #f5c6cb; padding: 30px; border-radius: 8px; text-align: center; }
+        h1 { color: #721c24; margin-top: 0; }
+        p { color: #721c24; font-size: 18px; }
+        .cross { font-size: 48px; color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="cross">✗</div>
+        <h1>Device Access Denied</h1>
+        <p>The authorization request has been rejected.</p>
+    </div>
+</body>
+</html>"#
+                .to_string(),
+        ))
+    }
 }

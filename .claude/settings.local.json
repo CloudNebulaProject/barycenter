@@ -41,7 +41,8 @@
       "Bash(sqlite3:*)",
       "Bash(rustc:*)",
       "Bash(docker build:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nfix(docker): Add missing client-wasm directory and update Rust version\n\n- Add COPY client-wasm to Dockerfile to include workspace member\n- Update Rust base image from 1.91 to 1.92\n- Fixes CI build failure: \"failed to load manifest for workspace member client-wasm\"\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nfix(docker): Add missing client-wasm directory and update Rust version\n\n- Add COPY client-wasm to Dockerfile to include workspace member\n- Update Rust base image from 1.91 to 1.92\n- Fixes CI build failure: \"failed to load manifest for workspace member client-wasm\"\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "WebFetch(domain:datatracker.ietf.org)"
     ],
     "deny": [],
     "ask": []
