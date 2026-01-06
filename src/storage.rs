@@ -5,7 +5,8 @@ use base64ct::Encoding;
 use chrono::Utc;
 use rand::RngCore;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter,
+    QueryOrder, Set,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -884,10 +885,7 @@ pub async fn update_passkey_name(
     Ok(())
 }
 
-pub async fn delete_passkey(
-    db: &DatabaseConnection,
-    credential_id: &str,
-) -> Result<(), CrabError> {
+pub async fn delete_passkey(db: &DatabaseConnection, credential_id: &str) -> Result<(), CrabError> {
     use entities::passkey::{Column, Entity};
 
     Entity::delete_many()
@@ -1204,7 +1202,7 @@ mod tests {
             Some("test_nonce".to_string()),
             "challenge_string",
             "S256",
-            300, // 5 minutes TTL
+            300,  // 5 minutes TTL
             None, // auth_time
         )
         .await
@@ -1258,7 +1256,7 @@ mod tests {
             None,
             "",
             "",
-            300, // TTL
+            300,  // TTL
             None, // auth_time
         )
         .await
@@ -1292,7 +1290,7 @@ mod tests {
             None,
             "",
             "",
-            300, // TTL
+            300,  // TTL
             None, // auth_time
         )
         .await
@@ -1306,7 +1304,10 @@ mod tests {
         let past_timestamp = chrono::Utc::now().timestamp() - 600; // 10 minutes ago
 
         Entity::update_many()
-            .col_expr(Column::ExpiresAt, sea_orm::sea_query::Expr::value(past_timestamp))
+            .col_expr(
+                Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(past_timestamp),
+            )
             .filter(Column::Code.eq(&code.code))
             .exec(db)
             .await
@@ -1358,11 +1359,15 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
+        let token = issue_access_token(
+            &db,
+            "test_client_id",
+            "test_subject",
+            "openid profile",
             3600, // TTL
         )
-            .await
-            .expect("Failed to issue access token");
+        .await
+        .expect("Failed to issue access token");
 
         assert!(!token.token.is_empty());
     }
@@ -1372,11 +1377,15 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
+        let token = issue_access_token(
+            &db,
+            "test_client_id",
+            "test_subject",
+            "openid profile",
             3600, // TTL
         )
-            .await
-            .expect("Failed to issue access token");
+        .await
+        .expect("Failed to issue access token");
 
         let access_token = get_access_token(&db, &token.token)
             .await
@@ -1393,11 +1402,15 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
+        let token = issue_access_token(
+            &db,
+            "test_client_id",
+            "test_subject",
+            "openid profile",
             3600, // TTL
         )
-            .await
-            .expect("Failed to issue access token");
+        .await
+        .expect("Failed to issue access token");
 
         // Manually expire the token
         use entities::access_token::{Column, Entity};
@@ -1406,7 +1419,10 @@ mod tests {
         let past_timestamp = chrono::Utc::now().timestamp() - 7200; // 2 hours ago
 
         Entity::update_many()
-            .col_expr(Column::ExpiresAt, sea_orm::sea_query::Expr::value(past_timestamp))
+            .col_expr(
+                Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(past_timestamp),
+            )
             .filter(Column::Token.eq(&token.token))
             .exec(db)
             .await
@@ -1425,11 +1441,15 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
+        let token = issue_access_token(
+            &db,
+            "test_client_id",
+            "test_subject",
+            "openid profile",
             3600, // TTL
         )
-            .await
-            .expect("Failed to issue access token");
+        .await
+        .expect("Failed to issue access token");
 
         // Manually revoke the token
         use entities::access_token::{Column, Entity};
@@ -1456,17 +1476,28 @@ mod tests {
         let db = test_db.connection();
 
         // Create initial refresh token
-        let token1 = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile",
+        let token1 = issue_refresh_token(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
             86400, // TTL
-            None, // parent_token
+            None,  // parent_token
         )
-            .await
-            .expect("Failed to issue refresh token");
+        .await
+        .expect("Failed to issue refresh token");
 
         // Rotate to new token
-        let token2 = issue_refresh_token(&db, "test_client_id", "test_subject", "openid profile", 86400, Some(token1.token.clone()))
-            .await
-            .expect("Failed to rotate refresh token");
+        let token2 = issue_refresh_token(
+            &db,
+            "test_client_id",
+            "test_subject",
+            "openid profile",
+            86400,
+            Some(token1.token.clone()),
+        )
+        .await
+        .expect("Failed to rotate refresh token");
 
         // Verify parent chain
         let rt2 = get_refresh_token(&db, &token2.token)
@@ -1482,12 +1513,16 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile",
+        let token = issue_refresh_token(
+            &db,
+            "test_subject",
+            "test_client_id",
+            "openid profile",
             86400, // TTL
-            None, // parent_token
+            None,  // parent_token
         )
-            .await
-            .expect("Failed to issue refresh token");
+        .await
+        .expect("Failed to issue refresh token");
 
         revoke_refresh_token(&db, &token.token)
             .await
@@ -1604,9 +1639,15 @@ mod tests {
             .await
             .expect("Failed to create user");
 
-        update_user(&db, &user.subject, false, Some("test@example.com".to_string()), Some(true))
-            .await
-            .expect("Failed to update user");
+        update_user(
+            &db,
+            &user.subject,
+            false,
+            Some("test@example.com".to_string()),
+            Some(true),
+        )
+        .await
+        .expect("Failed to update user");
 
         let updated = get_user_by_subject(&db, &user.subject)
             .await
@@ -1627,9 +1668,15 @@ mod tests {
             .await
             .expect("Failed to create user");
 
-        update_user(&db, &user.subject, true, Some("new@example.com".to_string()), None)
-            .await
-            .expect("Failed to update email");
+        update_user(
+            &db,
+            &user.subject,
+            true,
+            Some("new@example.com".to_string()),
+            None,
+        )
+        .await
+        .expect("Failed to update email");
 
         let updated = get_user_by_subject(&db, &user.subject)
             .await

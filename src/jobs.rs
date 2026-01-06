@@ -341,7 +341,10 @@ mod tests {
 
         assert!(execution.completed_at.is_some());
         assert_eq!(execution.success, Some(0));
-        assert_eq!(execution.error_message, Some("Test error message".to_string()));
+        assert_eq!(
+            execution.error_message,
+            Some("Test error message".to_string())
+        );
         assert!(execution.records_processed.is_none());
     }
 

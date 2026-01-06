@@ -160,8 +160,8 @@ mod tests {
         let config_path = temp_dir.path().join("nonexistent.toml");
 
         // Load settings with nonexistent file - should use defaults
-        let settings = Settings::load(config_path.to_str().unwrap())
-            .expect("Failed to load settings");
+        let settings =
+            Settings::load(config_path.to_str().unwrap()).expect("Failed to load settings");
 
         assert_eq!(settings.server.host, "0.0.0.0");
         assert_eq!(settings.server.port, 8080);
@@ -194,8 +194,8 @@ private_key_path = "test_private.pem"
         fs::write(&config_path, config_content).expect("Failed to write config");
 
         // Load settings
-        let settings = Settings::load(config_path.to_str().unwrap())
-            .expect("Failed to load settings");
+        let settings =
+            Settings::load(config_path.to_str().unwrap()).expect("Failed to load settings");
 
         assert_eq!(settings.server.host, "127.0.0.1");
         assert_eq!(settings.server.port, 9090);
@@ -204,7 +204,10 @@ private_key_path = "test_private.pem"
             Some("https://idp.example.com".to_string())
         );
         assert_eq!(settings.server.allow_public_registration, true);
-        assert_eq!(settings.database.url, "postgresql://user:pass@localhost/testdb");
+        assert_eq!(
+            settings.database.url,
+            "postgresql://user:pass@localhost/testdb"
+        );
     }
 
     #[test]
@@ -225,8 +228,8 @@ port = 8080
         env::set_var("BARYCENTER__SERVER__HOST", "192.168.1.1");
 
         // Load settings - env should override file
-        let settings = Settings::load(config_path.to_str().unwrap())
-            .expect("Failed to load settings");
+        let settings =
+            Settings::load(config_path.to_str().unwrap()).expect("Failed to load settings");
 
         assert_eq!(settings.server.host, "192.168.1.1");
         assert_eq!(settings.server.port, 9999);
@@ -287,8 +290,8 @@ private_key_path = "relative/private.pem"
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config");
 
-        let settings = Settings::load(config_path.to_str().unwrap())
-            .expect("Failed to load settings");
+        let settings =
+            Settings::load(config_path.to_str().unwrap()).expect("Failed to load settings");
 
         // Paths should be normalized to absolute
         assert!(settings.keys.jwks_path.is_absolute());
@@ -296,7 +299,10 @@ private_key_path = "relative/private.pem"
 
         // Should end with the relative path components
         assert!(settings.keys.jwks_path.ends_with("relative/jwks.json"));
-        assert!(settings.keys.private_key_path.ends_with("relative/private.pem"));
+        assert!(settings
+            .keys
+            .private_key_path
+            .ends_with("relative/private.pem"));
     }
 
     #[test]

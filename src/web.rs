@@ -1723,15 +1723,16 @@ async fn login_submit(
         .map(String::from);
 
     let now = chrono::Utc::now().timestamp();
-    let session = match storage::create_session(&state.db, &subject, now, 3600, user_agent, None).await {
-        Ok(s) => s,
-        Err(_) => {
-            let return_to = urlencoded(&form.return_to.unwrap_or_default());
-            let error = urlencoded("Failed to create session");
-            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
-                .into_response();
-        }
-    };
+    let session =
+        match storage::create_session(&state.db, &subject, now, 3600, user_agent, None).await {
+            Ok(s) => s,
+            Err(_) => {
+                let return_to = urlencoded(&form.return_to.unwrap_or_default());
+                let error = urlencoded("Failed to create session");
+                return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                    .into_response();
+            }
+        };
 
     // Set cookie
     let cookie = SessionCookie::new(session.session_id);
@@ -2126,12 +2127,12 @@ async fn passkey_register_finish(
         &cred_id_b64,
         &session.subject,
         &passkey_json,
-        counter,              // Extracted from passkey
-        None,                 // aaguid
-        backup_eligible,      // Extracted from passkey
-        backup_state,         // Extracted from passkey
-        None,                 // transports
-        req.name.as_deref(),  // Name from request
+        counter,             // Extracted from passkey
+        None,                // aaguid
+        backup_eligible,     // Extracted from passkey
+        backup_state,        // Extracted from passkey
+        None,                // transports
+        req.name.as_deref(), // Name from request
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

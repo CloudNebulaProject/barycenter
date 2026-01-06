@@ -102,8 +102,8 @@ fn random_kid() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     /// Helper to create test Keys config
     fn test_keys_config(temp_dir: &TempDir) -> Keys {
@@ -156,10 +156,9 @@ mod tests {
         assert!(cfg.private_key_path.exists());
 
         // Verify it contains valid JSON JWK
-        let content = fs::read_to_string(&cfg.private_key_path)
-            .expect("Failed to read private key");
-        let jwk: Jwk = serde_json::from_str(&content)
-            .expect("Failed to parse private key JSON");
+        let content =
+            fs::read_to_string(&cfg.private_key_path).expect("Failed to read private key");
+        let jwk: Jwk = serde_json::from_str(&content).expect("Failed to parse private key JSON");
 
         assert_eq!(jwk.key_type(), "RSA");
         assert!(jwk.parameter("d").is_some()); // Private exponent exists
@@ -178,10 +177,8 @@ mod tests {
         assert!(cfg.jwks_path.exists());
 
         // Verify it contains valid JWKS structure
-        let content = fs::read_to_string(&cfg.jwks_path)
-            .expect("Failed to read JWKS");
-        let jwks: Value = serde_json::from_str(&content)
-            .expect("Failed to parse JWKS JSON");
+        let content = fs::read_to_string(&cfg.jwks_path).expect("Failed to read JWKS");
+        let jwks: Value = serde_json::from_str(&content).expect("Failed to parse JWKS JSON");
 
         assert!(jwks.get("keys").is_some());
         assert!(jwks["keys"].is_array());
@@ -220,10 +217,7 @@ mod tests {
         let jwk1 = manager1.private_jwk();
         let jwk2 = manager2.private_jwk();
 
-        assert_eq!(
-            jwk1.parameter("n"),
-            jwk2.parameter("n")
-        );
+        assert_eq!(jwk1.parameter("n"), jwk2.parameter("n"));
     }
 
     #[tokio::test]
@@ -239,11 +233,13 @@ mod tests {
         let mut payload = JwtPayload::new();
         payload.set_issuer("https://example.com");
         payload.set_subject("user123");
-        let exp_time: std::time::SystemTime = (chrono::Utc::now() + chrono::Duration::hours(1)).into();
+        let exp_time: std::time::SystemTime =
+            (chrono::Utc::now() + chrono::Duration::hours(1)).into();
         payload.set_expires_at(&exp_time);
 
         // Sign the JWT
-        let token = manager.sign_jwt_rs256(&payload)
+        let token = manager
+            .sign_jwt_rs256(&payload)
             .expect("Failed to sign JWT");
 
         // Verify token is not empty and has 3 parts (header.payload.signature)
@@ -252,10 +248,9 @@ mod tests {
         assert_eq!(parts.len(), 3);
 
         // Decode and verify header contains kid
-        let header_json = base64ct::Base64UrlUnpadded::decode_vec(parts[0])
-            .expect("Failed to decode header");
-        let header: Value = serde_json::from_slice(&header_json)
-            .expect("Failed to parse header");
+        let header_json =
+            base64ct::Base64UrlUnpadded::decode_vec(parts[0]).expect("Failed to decode header");
+        let header: Value = serde_json::from_slice(&header_json).expect("Failed to parse header");
 
         assert_eq!(header["alg"], "RS256");
         assert_eq!(header["kid"], "test-kid-123");
@@ -311,7 +306,9 @@ mod tests {
 
         // Verify all are valid base64url
         for kid in [kid1, kid2, kid3] {
-            assert!(kid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+            assert!(kid
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         }
     }
 }

@@ -134,7 +134,11 @@ async fn sync_user(db: &DatabaseConnection, user_def: &UserDefinition) -> Result
                     db,
                     &existing_user.subject,
                     user_def.enabled,
-                    if !email_matches { user_def.email.clone() } else { None },
+                    if !email_matches {
+                        user_def.email.clone()
+                    } else {
+                        None
+                    },
                     None, // requires_2fa not set during sync
                 )
                 .await
