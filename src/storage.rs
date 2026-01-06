@@ -1049,21 +1049,35 @@ mod tests {
     use sea_orm_migration::MigratorTrait;
     use tempfile::NamedTempFile;
 
-    /// Helper to create an in-memory test database
-    async fn test_db() -> DatabaseConnection {
-        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
-        let db_path = temp_file.path().to_str().expect("Invalid temp file path");
-        let db_url = format!("sqlite://{}?mode=rwc", db_path);
+    /// Test database helper that keeps temp file alive
+    struct TestDb {
+        connection: DatabaseConnection,
+        _temp_file: NamedTempFile,
+    }
 
-        let db = Database::connect(&db_url)
-            .await
-            .expect("Failed to connect to test database");
+    impl TestDb {
+        async fn new() -> Self {
+            let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+            let db_path = temp_file.path().to_str().expect("Invalid temp file path");
+            let db_url = format!("sqlite://{}?mode=rwc", db_path);
 
-        migration::Migrator::up(&db, None)
-            .await
-            .expect("Failed to run migrations");
+            let connection = Database::connect(&db_url)
+                .await
+                .expect("Failed to connect to test database");
 
-        db
+            migration::Migrator::up(&connection, None)
+                .await
+                .expect("Failed to run migrations");
+
+            Self {
+                connection,
+                _temp_file: temp_file,
+            }
+        }
+
+        fn connection(&self) -> &DatabaseConnection {
+            &self.connection
+        }
     }
 
     // ============================================================================
@@ -1072,7 +1086,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_client() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let client = create_client(
             &db,
@@ -1091,7 +1106,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let created = create_client(
             &db,
@@ -1114,7 +1130,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_not_found() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let result = get_client(&db, "nonexistent_client_id")
             .await
@@ -1125,7 +1142,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_redirect_uris_parsing() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let uris = vec![
             "http://localhost:3000/callback".to_string(),
@@ -1158,7 +1176,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_auth_code() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let code = issue_auth_code(
             &db,
@@ -1181,7 +1200,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_consume_auth_code_success() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let code = issue_auth_code(
             &db,
@@ -1210,7 +1230,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_consume_auth_code_already_consumed() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let code = issue_auth_code(
             &db,
@@ -1243,7 +1264,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_consume_auth_code_expired() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let code = issue_auth_code(
             &db,
@@ -1270,7 +1292,7 @@ mod tests {
         Entity::update_many()
             .col_expr(Column::ExpiresAt, sea_orm::sea_query::Expr::value(past_timestamp))
             .filter(Column::Code.eq(&code.code))
-            .exec(&db)
+            .exec(db)
             .await
             .expect("Failed to update expiry");
 
@@ -1284,7 +1306,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_code_pkce_storage() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let code = issue_auth_code(
             &db,
@@ -1316,7 +1339,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_access_token() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
             3600, // TTL
@@ -1329,7 +1353,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_access_token_valid() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
             3600, // TTL
@@ -1349,7 +1374,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_access_token_expired() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
             3600, // TTL
@@ -1366,7 +1392,7 @@ mod tests {
         Entity::update_many()
             .col_expr(Column::ExpiresAt, sea_orm::sea_query::Expr::value(past_timestamp))
             .filter(Column::Token.eq(&token.token))
-            .exec(&db)
+            .exec(db)
             .await
             .expect("Failed to update expiry");
 
@@ -1380,7 +1406,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_access_token_revoked() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
             3600, // TTL
@@ -1395,7 +1422,7 @@ mod tests {
         Entity::update_many()
             .col_expr(Column::Revoked, sea_orm::sea_query::Expr::value(1))
             .filter(Column::Token.eq(&token.token))
-            .exec(&db)
+            .exec(db)
             .await
             .expect("Failed to revoke token");
 
@@ -1409,7 +1436,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_token_rotation() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         // Create initial refresh token
         let token1 = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile",
@@ -1435,7 +1463,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_revoke_refresh_token() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let token = issue_refresh_token(&db, "test_subject", "test_client_id", "openid profile",
             86400, // TTL
@@ -1462,7 +1491,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_user() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1477,7 +1507,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_user_by_username() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let created = create_user(&db, "testuser", "password123", None)
             .await
@@ -1494,7 +1525,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_user_password_success() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         create_user(&db, "testuser", "password123", None)
             .await
@@ -1511,7 +1543,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_user_password_wrong() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         create_user(&db, "testuser", "password123", None)
             .await
@@ -1526,7 +1559,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_user_password_disabled() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1547,7 +1581,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_user() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1569,7 +1604,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_user_email() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1593,7 +1629,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_session() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1610,7 +1647,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_session_valid() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1632,7 +1670,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_session_expired() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1653,7 +1692,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_session() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1677,7 +1717,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_expired_sessions() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let user = create_user(&db, "testuser", "password123", None)
             .await
@@ -1702,7 +1743,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_and_get_property() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let value = serde_json::json!({"key": "value"});
         set_property(&db, "owner1", "test_key", &value)
@@ -1719,7 +1761,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_property_upsert() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let value1 = serde_json::json!({"version": 1});
         set_property(&db, "owner1", "test_key", &value1)
@@ -1741,7 +1784,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_property_complex_json() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         let value = serde_json::json!({
             "nested": {

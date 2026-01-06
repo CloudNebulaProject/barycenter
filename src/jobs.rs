@@ -22,23 +22,23 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_sessions job");
-            let execution_id = start_job_execution(db, "cleanup_expired_sessions")
+            let execution_id = start_job_execution(&db, "cleanup_expired_sessions")
                 .await
                 .ok();
 
-            match storage::cleanup_expired_sessions(db).await {
+            match storage::cleanup_expired_sessions(&db).await {
                 Ok(count) => {
                     info!("Cleaned up {} expired sessions", count);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(db, id, true, None, Some(count as i64)).await;
+                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired sessions: {}", e);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(db, id, false, Some(e.to_string()), None).await;
+                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -58,23 +58,23 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_refresh_tokens job");
-            let execution_id = start_job_execution(db, "cleanup_expired_refresh_tokens")
+            let execution_id = start_job_execution(&db, "cleanup_expired_refresh_tokens")
                 .await
                 .ok();
 
-            match storage::cleanup_expired_refresh_tokens(db).await {
+            match storage::cleanup_expired_refresh_tokens(&db).await {
                 Ok(count) => {
                     info!("Cleaned up {} expired refresh tokens", count);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(db, id, true, None, Some(count as i64)).await;
+                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired refresh tokens: {}", e);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(db, id, false, Some(e.to_string()), None).await;
+                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -94,23 +94,23 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_challenges job");
-            let execution_id = start_job_execution(db, "cleanup_expired_challenges")
+            let execution_id = start_job_execution(&db, "cleanup_expired_challenges")
                 .await
                 .ok();
 
-            match storage::cleanup_expired_challenges(db).await {
+            match storage::cleanup_expired_challenges(&db).await {
                 Ok(count) => {
                     info!("Cleaned up {} expired WebAuthn challenges", count);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(db, id, true, None, Some(count as i64)).await;
+                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired challenges: {}", e);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(db, id, false, Some(e.to_string()), None).await;
+                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }

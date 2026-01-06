@@ -1881,7 +1881,7 @@ struct UpdatePasskeyRequest {
 async fn passkey_register_start(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<PasskeyRegisterStartRequest>,
+    Json(_req): Json<PasskeyRegisterStartRequest>,
 ) -> Result<Json<PasskeyRegisterStartResponse>, (StatusCode, String)> {
     // Get session from cookie
     let cookie = SessionCookie::from_headers(&headers)

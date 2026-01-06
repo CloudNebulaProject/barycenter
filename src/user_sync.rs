@@ -1,4 +1,3 @@
-use crate::errors::CrabError;
 use crate::storage;
 use miette::{IntoDiagnostic, Result};
 use sea_orm::DatabaseConnection;
@@ -125,7 +124,7 @@ async fn sync_user(db: &DatabaseConnection, user_def: &UserDefinition) -> Result
         Some(existing_user) => {
             // User exists - check if update is needed
             let enabled_matches = (existing_user.enabled == 1) == user_def.enabled;
-            let email_verified_matches =
+            let _email_verified_matches =
                 (existing_user.email_verified == 1) == user_def.email_verified;
             let email_matches = existing_user.email == user_def.email;
 

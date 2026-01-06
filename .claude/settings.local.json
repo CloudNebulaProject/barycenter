@@ -30,7 +30,9 @@
       "Bash(cargo run:*)",
       "Bash(wasm-pack build:*)",
       "Bash(find:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(cargo fix:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []
