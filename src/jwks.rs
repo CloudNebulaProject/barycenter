@@ -46,7 +46,17 @@ impl JwksManager {
 
         // Ensure JWKS file exists or update from private_jwk
         if !cfg.jwks_path.exists() {
-            let public = private_jwk.to_public_key()?;
+            let mut public = private_jwk.to_public_key()?;
+            // Copy metadata from private key to public key
+            if let Some(kid) = private_jwk.key_id() {
+                public.set_key_id(kid);
+            }
+            if let Some(alg) = private_jwk.algorithm() {
+                public.set_algorithm(alg);
+            }
+            if let Some(use_) = private_jwk.key_use() {
+                public.set_key_use(use_);
+            }
             let jwk_val: Value = serde_json::to_value(public)?;
             let jwks = json!({ "keys": [jwk_val] });
             fs::write(&cfg.jwks_path, serde_json::to_string_pretty(&jwks)?)?;

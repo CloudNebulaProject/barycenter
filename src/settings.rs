@@ -7,6 +7,7 @@ pub struct Settings {
     pub server: Server,
     pub database: Database,
     pub keys: Keys,
+    #[serde(default)]
     pub federation: Federation,
 }
 

@@ -1342,7 +1342,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
+        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
             3600, // TTL
         )
             .await
@@ -1356,7 +1356,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
+        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
             3600, // TTL
         )
             .await
@@ -1377,7 +1377,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
+        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
             3600, // TTL
         )
             .await
@@ -1409,7 +1409,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let token = issue_access_token(&db, "test_subject", "test_client_id", "openid profile",
+        let token = issue_access_token(&db, "test_client_id", "test_subject", "openid profile",
             3600, // TTL
         )
             .await
