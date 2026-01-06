@@ -22,23 +22,23 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_sessions job");
-            let execution_id = start_job_execution(&db, "cleanup_expired_sessions")
+            let execution_id = start_job_execution(db, "cleanup_expired_sessions")
                 .await
                 .ok();
 
-            match storage::cleanup_expired_sessions(&db).await {
+            match storage::cleanup_expired_sessions(db).await {
                 Ok(count) => {
                     info!("Cleaned up {} expired sessions", count);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
+                            complete_job_execution(db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired sessions: {}", e);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
+                            complete_job_execution(db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -58,23 +58,23 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_refresh_tokens job");
-            let execution_id = start_job_execution(&db, "cleanup_expired_refresh_tokens")
+            let execution_id = start_job_execution(db, "cleanup_expired_refresh_tokens")
                 .await
                 .ok();
 
-            match storage::cleanup_expired_refresh_tokens(&db).await {
+            match storage::cleanup_expired_refresh_tokens(db).await {
                 Ok(count) => {
                     info!("Cleaned up {} expired refresh tokens", count);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
+                            complete_job_execution(db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired refresh tokens: {}", e);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
+                            complete_job_execution(db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -94,23 +94,23 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_challenges job");
-            let execution_id = start_job_execution(&db, "cleanup_expired_challenges")
+            let execution_id = start_job_execution(db, "cleanup_expired_challenges")
                 .await
                 .ok();
 
-            match storage::cleanup_expired_challenges(&db).await {
+            match storage::cleanup_expired_challenges(db).await {
                 Ok(count) => {
                     info!("Cleaned up {} expired WebAuthn challenges", count);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(&db, id, true, None, Some(count as i64)).await;
+                            complete_job_execution(db, id, true, None, Some(count as i64)).await;
                     }
                 }
                 Err(e) => {
                     error!("Failed to cleanup expired challenges: {}", e);
                     if let Some(id) = execution_id {
                         let _ =
-                            complete_job_execution(&db, id, false, Some(e.to_string()), None).await;
+                            complete_job_execution(db, id, false, Some(e.to_string()), None).await;
                     }
                 }
             }
@@ -226,28 +226,43 @@ mod tests {
     use sea_orm_migration::MigratorTrait;
     use tempfile::NamedTempFile;
 
-    /// Helper to create an in-memory test database
-    async fn test_db() -> DatabaseConnection {
-        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
-        let db_path = temp_file.path().to_str().expect("Invalid temp file path");
-        let db_url = format!("sqlite://{}?mode=rwc", db_path);
+    /// Test database helper that keeps temp file alive
+    struct TestDb {
+        connection: DatabaseConnection,
+        _temp_file: NamedTempFile,
+    }
 
-        let db = Database::connect(&db_url)
-            .await
-            .expect("Failed to connect to test database");
+    impl TestDb {
+        async fn new() -> Self {
+            let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+            let db_path = temp_file.path().to_str().expect("Invalid temp file path");
+            let db_url = format!("sqlite://{}?mode=rwc", db_path);
 
-        migration::Migrator::up(&db, None)
-            .await
-            .expect("Failed to run migrations");
+            let connection = Database::connect(&db_url)
+                .await
+                .expect("Failed to connect to test database");
 
-        db
+            migration::Migrator::up(&connection, None)
+                .await
+                .expect("Failed to run migrations");
+
+            Self {
+                connection,
+                _temp_file: temp_file,
+            }
+        }
+
+        fn connection(&self) -> &DatabaseConnection {
+            &self.connection
+        }
     }
 
     #[tokio::test]
     async fn test_start_job_execution() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
-        let execution_id = start_job_execution(&db, "test_job")
+        let execution_id = start_job_execution(db, "test_job")
             .await
             .expect("Failed to start job execution");
 
@@ -257,7 +272,7 @@ mod tests {
         use entities::job_execution::{Column, Entity};
         let execution = Entity::find()
             .filter(Column::Id.eq(execution_id))
-            .one(&db)
+            .one(db)
             .await
             .expect("Failed to query job execution")
             .expect("Job execution not found");
@@ -270,13 +285,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_complete_job_execution_success() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
-        let execution_id = start_job_execution(&db, "test_job")
+        let execution_id = start_job_execution(db, "test_job")
             .await
             .expect("Failed to start job execution");
 
-        complete_job_execution(&db, execution_id, true, None, Some(42))
+        complete_job_execution(db, execution_id, true, None, Some(42))
             .await
             .expect("Failed to complete job execution");
 
@@ -284,7 +300,7 @@ mod tests {
         use entities::job_execution::{Column, Entity};
         let execution = Entity::find()
             .filter(Column::Id.eq(execution_id))
-            .one(&db)
+            .one(db)
             .await
             .expect("Failed to query job execution")
             .expect("Job execution not found");
@@ -297,9 +313,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_complete_job_execution_failure() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
-        let execution_id = start_job_execution(&db, "test_job")
+        let execution_id = start_job_execution(db, "test_job")
             .await
             .expect("Failed to start job execution");
 
@@ -317,7 +334,7 @@ mod tests {
         use entities::job_execution::{Column, Entity};
         let execution = Entity::find()
             .filter(Column::Id.eq(execution_id))
-            .one(&db)
+            .one(db)
             .await
             .expect("Failed to query job execution")
             .expect("Job execution not found");
@@ -330,20 +347,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_trigger_job_manually_cleanup_sessions() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         // Create an expired session
-        let user = storage::create_user(&db, "testuser", "password123", None)
+        let user = storage::create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         let past_auth_time = Utc::now().timestamp() - 7200; // 2 hours ago
-        storage::create_session(&db, &user.subject, past_auth_time, 3600, None, None) // 1 hour TTL
+        storage::create_session(db, &user.subject, past_auth_time, 3600, None, None) // 1 hour TTL
             .await
             .expect("Failed to create session");
 
         // Trigger cleanup job
-        trigger_job_manually(&db, "cleanup_expired_sessions")
+        trigger_job_manually(db, "cleanup_expired_sessions")
             .await
             .expect("Failed to trigger job");
 
@@ -351,7 +369,7 @@ mod tests {
         use entities::job_execution::{Column, Entity};
         let execution = Entity::find()
             .filter(Column::JobName.eq("cleanup_expired_sessions"))
-            .one(&db)
+            .one(db)
             .await
             .expect("Failed to query job execution")
             .expect("Job execution not found");
@@ -362,10 +380,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_trigger_job_manually_cleanup_tokens() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
         // Trigger cleanup_expired_refresh_tokens job
-        trigger_job_manually(&db, "cleanup_expired_refresh_tokens")
+        trigger_job_manually(db, "cleanup_expired_refresh_tokens")
             .await
             .expect("Failed to trigger job");
 
@@ -373,7 +392,7 @@ mod tests {
         use entities::job_execution::{Column, Entity};
         let execution = Entity::find()
             .filter(Column::JobName.eq("cleanup_expired_refresh_tokens"))
-            .one(&db)
+            .one(db)
             .await
             .expect("Failed to query job execution")
             .expect("Job execution not found");
@@ -383,9 +402,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_trigger_job_manually_invalid_name() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
-        let result = trigger_job_manually(&db, "invalid_job_name").await;
+        let result = trigger_job_manually(db, "invalid_job_name").await;
 
         assert!(result.is_err());
         match result {
@@ -398,14 +418,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_job_execution_records_processed() {
-        let db = test_db().await;
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
 
-        let execution_id = start_job_execution(&db, "test_job")
+        let execution_id = start_job_execution(db, "test_job")
             .await
             .expect("Failed to start job execution");
 
         // Complete with specific record count
-        complete_job_execution(&db, execution_id, true, None, Some(123))
+        complete_job_execution(db, execution_id, true, None, Some(123))
             .await
             .expect("Failed to complete job execution");
 
@@ -413,7 +434,7 @@ mod tests {
         use entities::job_execution::{Column, Entity};
         let execution = Entity::find()
             .filter(Column::Id.eq(execution_id))
-            .one(&db)
+            .one(db)
             .await
             .expect("Failed to query job execution")
             .expect("Job execution not found");

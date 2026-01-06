@@ -98,7 +98,7 @@ async fn sync_user(db: &DatabaseConnection, user_def: &UserDefinition) -> Result
         None => {
             // Create new user
             tracing::info!("Creating user: {}", user_def.username);
-            storage::create_user(
+            let user = storage::create_user(
                 db,
                 &user_def.username,
                 &user_def.password,
@@ -107,13 +107,14 @@ async fn sync_user(db: &DatabaseConnection, user_def: &UserDefinition) -> Result
             .await
             .into_diagnostic()?;
 
-            // Update enabled and email_verified flags if needed
-            if !user_def.enabled || user_def.email_verified {
+            // Update enabled flag if needed (email already set during creation)
+            if !user_def.enabled {
                 storage::update_user(
                     db,
-                    &user_def.username,
+                    &user.subject,
                     user_def.enabled,
-                    user_def.email_verified,
+                    None, // email already set
+                    None, // requires_2fa not set during sync
                 )
                 .await
                 .into_diagnostic()?;
@@ -128,23 +129,17 @@ async fn sync_user(db: &DatabaseConnection, user_def: &UserDefinition) -> Result
                 (existing_user.email_verified == 1) == user_def.email_verified;
             let email_matches = existing_user.email == user_def.email;
 
-            if !enabled_matches || !email_verified_matches || !email_matches {
+            if !enabled_matches || !email_matches {
                 tracing::info!("Updating user: {}", user_def.username);
                 storage::update_user(
                     db,
-                    &user_def.username,
+                    &existing_user.subject,
                     user_def.enabled,
-                    user_def.email_verified,
+                    if !email_matches { user_def.email.clone() } else { None },
+                    None, // requires_2fa not set during sync
                 )
                 .await
                 .into_diagnostic()?;
-
-                // Update email if it changed
-                if !email_matches {
-                    storage::update_user_email(db, &user_def.username, user_def.email.clone())
-                        .await
-                        .into_diagnostic()?;
-                }
 
                 SyncResult::Updated
             } else {

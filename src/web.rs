@@ -1633,7 +1633,8 @@ async fn login_submit(
         .and_then(|h| h.to_str().ok())
         .map(String::from);
 
-    let session = match storage::create_session(&state.db, &subject, 3600, user_agent, None).await {
+    let now = chrono::Utc::now().timestamp();
+    let session = match storage::create_session(&state.db, &subject, now, 3600, user_agent, None).await {
         Ok(s) => s,
         Err(_) => {
             let return_to = urlencoded(&form.return_to.unwrap_or_default());
@@ -1918,11 +1919,10 @@ async fn passkey_register_start(
     storage::create_webauthn_challenge(
         &state.db,
         &challenge_b64,
-        Some(session.subject.clone()),
+        Some(&session.subject),
         None,
         "registration",
         &options_json,
-        300, // 5 minutes
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2009,12 +2009,12 @@ async fn passkey_register_finish(
         &cred_id_b64,
         &session.subject,
         &passkey_json,
-        0,                // counter - TODO: extract from passkey when we understand the API
-        None,             // aaguid
-        false,            // backup_eligible - TODO: extract from passkey
-        false,            // backup_state - TODO: extract from passkey
-        None,             // transports
-        req.name.clone(), // Name from request
+        0,                              // counter - TODO: extract from passkey when we understand the API
+        None,                           // aaguid
+        false,                          // backup_eligible - TODO: extract from passkey
+        false,                          // backup_state - TODO: extract from passkey
+        None,                           // transports
+        req.name.as_deref(),            // Name from request
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2091,11 +2091,10 @@ async fn passkey_auth_start(
     storage::create_webauthn_challenge(
         &state.db,
         &challenge_b64,
-        subject,
+        subject.as_deref(),
         None,
         "authentication",
         &options_json,
-        300, // 5 minutes
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2161,17 +2160,20 @@ async fn passkey_auth_finish(
     };
 
     // Create session
-    let session = storage::create_session(&state.db, &passkey.subject, 3600, None, None)
+    let now = chrono::Utc::now().timestamp();
+    let session = storage::create_session(&state.db, &passkey.subject, now, 3600, None, None)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Update session with passkey AMR
+    let amr_json = serde_json::to_string(&amr)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     storage::update_session_auth_context(
         &state.db,
         &session.session_id,
-        Some(amr),
-        Some("aal1".to_string()),
-        false,
+        Some(&amr_json),
+        Some("aal1"),
+        Some(false),
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2249,11 +2251,10 @@ async fn passkey_2fa_start(
     storage::create_webauthn_challenge(
         &state.db,
         &challenge_b64,
-        Some(session.subject.clone()),
-        Some(session.session_id.clone()),
+        Some(&session.subject),
+        Some(&session.session_id),
         "2fa",
         &options_json,
-        300,
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2340,8 +2341,8 @@ async fn passkey_2fa_finish(
         &state.db,
         &session.session_id,
         None,
-        Some("aal2".to_string()),
-        true,
+        Some("aal2"),
+        Some(true),
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

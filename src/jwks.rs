@@ -229,7 +229,8 @@ mod tests {
         let mut payload = JwtPayload::new();
         payload.set_issuer("https://example.com");
         payload.set_subject("user123");
-        payload.set_expires_at(&(chrono::Utc::now() + chrono::Duration::hours(1)));
+        let exp_time: std::time::SystemTime = (chrono::Utc::now() + chrono::Duration::hours(1)).into();
+        payload.set_expires_at(&exp_time);
 
         // Sign the JWT
         let token = manager.sign_jwt_rs256(&payload)
