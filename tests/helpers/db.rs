@@ -43,16 +43,14 @@ pub async fn seed_test_user(
     db: &DatabaseConnection,
     username: &str,
     password: &str,
-) -> barycenter::entities::user::Model {
+) -> barycenter::storage::User {
     barycenter::storage::create_user(db, username, password, None)
         .await
         .expect("Failed to create test user")
 }
 
 /// Create a test OAuth client for testing
-pub async fn seed_test_client(
-    db: &DatabaseConnection,
-) -> barycenter::entities::client::Model {
+pub async fn seed_test_client(db: &DatabaseConnection) -> barycenter::storage::Client {
     use barycenter::storage::NewClient;
 
     barycenter::storage::create_client(

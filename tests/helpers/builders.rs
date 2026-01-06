@@ -42,7 +42,7 @@ impl UserBuilder {
         self
     }
 
-    pub async fn create(self, db: &DatabaseConnection) -> entities::user::Model {
+    pub async fn create(self, db: &DatabaseConnection) -> storage::User {
         let user = storage::create_user(db, &self.username, &self.password, self.email)
             .await
             .expect("Failed to create test user");
@@ -99,7 +99,7 @@ impl ClientBuilder {
         self
     }
 
-    pub async fn create(self, db: &DatabaseConnection) -> entities::client::Model {
+    pub async fn create(self, db: &DatabaseConnection) -> storage::Client {
         storage::create_client(
             db,
             storage::NewClient {
@@ -165,10 +165,11 @@ impl SessionBuilder {
         self
     }
 
-    pub async fn create(self, db: &DatabaseConnection) -> entities::session::Model {
-        let session = storage::create_session(db, &self.subject, self.auth_time, self.ttl, None, None)
-            .await
-            .expect("Failed to create test session");
+    pub async fn create(self, db: &DatabaseConnection) -> storage::Session {
+        let session =
+            storage::create_session(db, &self.subject, self.auth_time, self.ttl, None, None)
+                .await
+                .expect("Failed to create test session");
 
         // Update AMR/ACR/MFA if needed
         if self.amr.is_some() || self.acr.is_some() || self.mfa_verified {
@@ -235,9 +236,12 @@ impl PasskeyBuilder {
         use webauthn_rs::prelude::*;
 
         // Create a test passkey with minimal data
+        use base64ct::{Base64UrlUnpadded, Encoding};
         let credential_id = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let cred_id_b64 = Base64UrlUnpadded::encode_string(&credential_id);
+
         let passkey_json = serde_json::json!({
-            "cred_id": base64::encode(&credential_id),
+            "cred_id": &cred_id_b64,
             "cred": {
                 "counter": 0,
                 "backup_state": self.backup_state,
@@ -247,7 +251,7 @@ impl PasskeyBuilder {
 
         storage::create_passkey(
             db,
-            &base64ct::Base64UrlUnpadded::encode_string(&credential_id),
+            &cred_id_b64,
             &self.subject,
             &serde_json::to_string(&passkey_json).unwrap(),
             0,

@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebAuthn Fixture Capture Tool</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .section {
+            margin: 30px 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .info {
+            background: #e7f3ff;
+            border-left: 4px solid #007bff;
+            padding: 12px;
+            margin: 15px 0;
+        }
+        .warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 12px;
+            margin: 15px 0;
+        }
+        .success {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px;
+            margin: 15px 0;
+        }
+        input {
+            padding: 8px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 300px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔑 WebAuthn Fixture Capture Tool</h1>
+
+        <div class="info">
+            <strong>Purpose:</strong> This tool captures real WebAuthn responses from your authenticator
+            for use in integration tests. It communicates with a local Barycenter server.
+        </div>
+
+        <div class="warning">
+            <strong>Prerequisites:</strong>
+            <ul>
+                <li>Barycenter server running on <code>http://localhost:9090</code></li>
+                <li>A user account created (default: username=admin, password=password123)</li>
+                <li>An authenticator available (hardware key, TouchID, Windows Hello, etc.)</li>
+            </ul>
+        </div>
+
+        <div class="section">
+            <h2>Configuration</h2>
+            <div style="margin: 15px 0;">
+                <label for="serverUrl">Server URL:</label>
+                <input type="text" id="serverUrl" value="http://localhost:9090" />
+            </div>
+            <div style="margin: 15px 0;">
+                <label for="username">Username:</label>
+                <input type="text" id="username" value="admin" />
+            </div>
+            <div style="margin: 15px 0;">
+                <label for="password">Password:</label>
+                <input type="password" id="password" value="password123" />
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Step 1: Login</h2>
+            <button onclick="login()">Login to Server</button>
+            <div id="loginStatus"></div>
+        </div>
+
+        <div class="section">
+            <h2>Step 2: Capture Passkey Registration</h2>
+            <button onclick="captureRegistration()" id="regBtn" disabled>
+                Capture Registration Fixture
+            </button>
+            <div id="registrationStatus"></div>
+            <pre id="registrationOutput" style="display:none;"></pre>
+        </div>
+
+        <div class="section">
+            <h2>Step 3: Capture Passkey Authentication</h2>
+            <button onclick="captureAuthentication()" id="authBtn" disabled>
+                Capture Authentication Fixture
+            </button>
+            <div id="authenticationStatus"></div>
+            <pre id="authenticationOutput" style="display:none;"></pre>
+        </div>
+
+        <div class="section success" style="display:none;" id="instructions">
+            <h3>Next Steps:</h3>
+            <ol>
+                <li>Copy the JSON output above</li>
+                <li>Save as <code>tests/fixtures/hardware_key_registration.json</code> or <code>cloud_synced_passkey.json</code></li>
+                <li>Use in your integration tests via <code>load_fixture("hardware_key_registration")</code></li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        const serverUrl = () => document.getElementById('serverUrl').value;
+        const username = () => document.getElementById('username').value;
+        const password = () => document.getElementById('password').value;
+        let sessionCookie = null;
+        let credentialId = null;
+
+        // Utility functions
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        function showStatus(elementId, message, isError = false) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = `<div class="${isError ? 'warning' : 'success'}" style="margin-top: 10px;">${message}</div>`;
+        }
+
+        async function login() {
+            try {
+                const formData = new URLSearchParams();
+                formData.append('username', username());
+                formData.append('password', password());
+
+                const response = await fetch(`${serverUrl()}/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: formData,
+                    credentials: 'include',
+                    redirect: 'manual'
+                });
+
+                if (response.status === 0 || response.status === 303 || response.ok) {
+                    showStatus('loginStatus', '✓ Login successful! Session created.');
+                    document.getElementById('regBtn').disabled = false;
+                    document.getElementById('authBtn').disabled = false;
+                } else {
+                    showStatus('loginStatus', `✗ Login failed: ${response.status} ${response.statusText}`, true);
+                }
+            } catch (error) {
+                showStatus('loginStatus', `✗ Login error: ${error.message}`, true);
+            }
+        }
+
+        async function captureRegistration() {
+            try {
+                // Start registration
+                const startResp = await fetch(`${serverUrl()}/webauthn/register/start`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!startResp.ok) {
+                    const error = await startResp.text();
+                    showStatus('registrationStatus', `✗ Start failed: ${error}`, true);
+                    return;
+                }
+
+                const challengeResponse = await startResp.json();
+                showStatus('registrationStatus', '⏳ Challenge received, waiting for authenticator...');
+
+                // Convert challenge from base64
+                const publicKey = {
+                    ...challengeResponse.publicKey,
+                    challenge: base64ToArrayBuffer(challengeResponse.publicKey.challenge),
+                    user: {
+                        ...challengeResponse.publicKey.user,
+                        id: base64ToArrayBuffer(challengeResponse.publicKey.user.id)
+                    }
+                };
+
+                // Create credential
+                const credential = await navigator.credentials.create({ publicKey });
+
+                showStatus('registrationStatus', '⏳ Credential created, finishing registration...');
+
+                // Prepare credential for sending
+                const credentialResponse = {
+                    id: credential.id,
+                    rawId: arrayBufferToBase64(credential.rawId),
+                    response: {
+                        clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON),
+                        attestationObject: arrayBufferToBase64(credential.response.attestationObject)
+                    },
+                    type: credential.type,
+                    authenticatorAttachment: credential.authenticatorAttachment,
+                    name: "Test Passkey"
+                };
+
+                // Finish registration
+                const finishResp = await fetch(`${serverUrl()}/webauthn/register/finish`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ credential: credentialResponse, name: "Test Passkey" })
+                });
+
+                if (!finishResp.ok) {
+                    const error = await finishResp.text();
+                    showStatus('registrationStatus', `✗ Finish failed: ${error}`, true);
+                    return;
+                }
+
+                const result = await finishResp.json();
+                credentialId = result.credential_id;
+
+                // Create fixture
+                const fixture = {
+                    type: "passkey_registration",
+                    challenge_response: challengeResponse,
+                    credential_response: credentialResponse,
+                    server_response: result,
+                    metadata: {
+                        captured_at: new Date().toISOString(),
+                        authenticator_attachment: credential.authenticatorAttachment,
+                        user_agent: navigator.userAgent
+                    }
+                };
+
+                const output = document.getElementById('registrationOutput');
+                output.textContent = JSON.stringify(fixture, null, 2);
+                output.style.display = 'block';
+
+                showStatus('registrationStatus', '✓ Registration captured! See JSON below.');
+                document.getElementById('instructions').style.display = 'block';
+            } catch (error) {
+                showStatus('registrationStatus', `✗ Error: ${error.message}`, true);
+                console.error('Registration error:', error);
+            }
+        }
+
+        async function captureAuthentication() {
+            try {
+                // Start authentication
+                const startResp = await fetch(`${serverUrl()}/webauthn/authenticate/start`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username: username() })
+                });
+
+                if (!startResp.ok) {
+                    const error = await startResp.text();
+                    showStatus('authenticationStatus', `✗ Start failed: ${error}`, true);
+                    return;
+                }
+
+                const challengeResponse = await startResp.json();
+                showStatus('authenticationStatus', '⏳ Challenge received, waiting for authenticator...');
+
+                // Convert challenge from base64
+                const publicKey = {
+                    ...challengeResponse.publicKey,
+                    challenge: base64ToArrayBuffer(challengeResponse.publicKey.challenge),
+                    allowCredentials: challengeResponse.publicKey.allowCredentials?.map(cred => ({
+                        ...cred,
+                        id: base64ToArrayBuffer(cred.id)
+                    }))
+                };
+
+                // Get credential
+                const credential = await navigator.credentials.get({ publicKey });
+
+                showStatus('authenticationStatus', '⏳ Authenticated, finishing...');
+
+                // Prepare credential for sending
+                const credentialResponse = {
+                    id: credential.id,
+                    rawId: arrayBufferToBase64(credential.rawId),
+                    response: {
+                        clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON),
+                        authenticatorData: arrayBufferToBase64(credential.response.authenticatorData),
+                        signature: arrayBufferToBase64(credential.response.signature),
+                        userHandle: credential.response.userHandle ?
+                            arrayBufferToBase64(credential.response.userHandle) : null
+                    },
+                    type: credential.type,
+                    authenticatorAttachment: credential.authenticatorAttachment
+                };
+
+                // Finish authentication
+                const finishResp = await fetch(`${serverUrl()}/webauthn/authenticate/finish`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        credential: credentialResponse,
+                        return_to: "/"
+                    }),
+                    redirect: 'manual'
+                });
+
+                // Create fixture
+                const fixture = {
+                    type: "passkey_authentication",
+                    challenge_response: challengeResponse,
+                    credential_response: credentialResponse,
+                    metadata: {
+                        captured_at: new Date().toISOString(),
+                        authenticator_attachment: credential.authenticatorAttachment,
+                        user_agent: navigator.userAgent
+                    }
+                };
+
+                const output = document.getElementById('authenticationOutput');
+                output.textContent = JSON.stringify(fixture, null, 2);
+                output.style.display = 'block';
+
+                showStatus('authenticationStatus', '✓ Authentication captured! See JSON below.');
+                document.getElementById('instructions').style.display = 'block';
+            } catch (error) {
+                showStatus('authenticationStatus', `✗ Error: ${error.message}`, true);
+                console.error('Authentication error:', error);
+            }
+        }
+    </script>
+</body>
+</html>
