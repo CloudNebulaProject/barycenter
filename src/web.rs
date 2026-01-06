@@ -845,8 +845,11 @@ async fn consent_page(
                     urlencoded(&q.code_challenge_method.as_ref().unwrap_or(&String::new())),
                     q.state.as_ref().map(|s| format!("&state={}", urlencoded(s))).unwrap_or_default()
                 );
-                return Redirect::temporary(&format!("/login?return_to={}", urlencoded(&return_to)))
-                    .into_response();
+                return Redirect::temporary(&format!(
+                    "/login?return_to={}",
+                    urlencoded(&return_to)
+                ))
+                .into_response();
             }
         },
         None => {
@@ -911,7 +914,13 @@ async fn consent_page(
             // Append query parameters to HTML
             let query_string = serde_urlencoded::to_string(&params).unwrap_or_default();
             let html_with_params = if html.contains("</body>") {
-                html.replace("</body>", &format!("<script>window.location.search = '?{}';</script></body>", query_string))
+                html.replace(
+                    "</body>",
+                    &format!(
+                        "<script>window.location.search = '?{}';</script></body>",
+                        query_string
+                    ),
+                )
             } else {
                 html
             };
@@ -923,13 +932,11 @@ async fn consent_page(
                 .unwrap()
                 .into_response()
         }
-        Err(_) => {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Consent page not found"))
-                .unwrap()
-                .into_response()
-        }
+        Err(_) => Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("Consent page not found"))
+            .unwrap()
+            .into_response(),
     }
 }
 
@@ -1019,7 +1026,10 @@ async fn consent_submit(
 
         let authorize_url = url_append_query(
             "/authorize".to_string(),
-            &params.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>(),
+            &params
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect::<Vec<_>>(),
         );
 
         return Redirect::temporary(&authorize_url).into_response();

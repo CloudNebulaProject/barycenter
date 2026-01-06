@@ -24,7 +24,12 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Consent::Scope).string().not_null())
                     .col(ColumnDef::new(Consent::GrantedAt).big_integer().not_null())
                     .col(ColumnDef::new(Consent::ExpiresAt).big_integer())
-                    .col(ColumnDef::new(Consent::Revoked).integer().not_null().default(0))
+                    .col(
+                        ColumnDef::new(Consent::Revoked)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
                     .to_owned(),
             )
             .await?;
