@@ -1,6 +1,6 @@
 # Multi-stage build for Barycenter OpenID Connect IdP
 # Build stage
-FROM rust:1.91-bookworm AS builder
+FROM rust:1.92-bookworm AS builder
 
 WORKDIR /build
 
@@ -10,6 +10,7 @@ COPY Cargo.toml Cargo.lock ./
 # Copy source code
 COPY src ./src
 COPY migration ./migration
+COPY client-wasm ./client-wasm
 
 # Build release binary with platform-specific caches to avoid race conditions
 ARG TARGETPLATFORM
