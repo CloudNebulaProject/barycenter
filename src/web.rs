@@ -119,6 +119,7 @@ pub async fn serve(
         .route("/logout", get(logout))
         .route("/authorize", get(authorize))
         .route("/token", post(token))
+        .route("/revoke", post(token_revoke))
         .route("/userinfo", get(userinfo))
         // WebAuthn / Passkey endpoints
         .route("/webauthn/register/start", post(passkey_register_start))
@@ -1011,6 +1012,94 @@ async fn handle_authorization_code_grant(
             ("pragma", "no-cache".to_string()),
         ],
     )
+}
+
+/// POST /revoke - Token revocation endpoint (RFC 7009)
+#[derive(Debug, Deserialize)]
+struct TokenRevokeRequest {
+    token: String,
+    token_type_hint: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
+async fn token_revoke(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(req): Form<TokenRevokeRequest>,
+) -> Response {
+    // Client authentication: try Basic auth first, then form body
+    let mut basic_client: Option<(String, String)> = None;
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
+        if let Some(b64) = auth_val.strip_prefix("Basic ") {
+            if let Ok(mut decoded) = Base64::decode_vec(b64) {
+                if let Ok(s) = String::from_utf8(std::mem::take(&mut decoded)) {
+                    if let Some((id, sec)) = s.split_once(':') {
+                        basic_client = Some((id.to_string(), sec.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    let (client_id, client_secret) = if let Some(pair) = basic_client {
+        pair
+    } else {
+        // Try client_secret_post (form body)
+        match (req.client_id.clone(), req.client_secret.clone()) {
+            (Some(id), Some(sec)) => (id, sec),
+            _ => {
+                return json_with_headers(
+                    StatusCode::UNAUTHORIZED,
+                    json!({"error":"invalid_client"}),
+                    &[(
+                        "www-authenticate",
+                        "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                    )],
+                )
+            }
+        }
+    };
+
+    // Verify client exists and credentials match
+    let client = match storage::get_client(&state.db, &client_id).await {
+        Ok(Some(c)) => c,
+        _ => {
+            return json_with_headers(
+                StatusCode::UNAUTHORIZED,
+                json!({"error":"invalid_client"}),
+                &[(
+                    "www-authenticate",
+                    "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                )],
+            )
+        }
+    };
+
+    if client.client_secret != client_secret {
+        return json_with_headers(
+            StatusCode::UNAUTHORIZED,
+            json!({"error":"invalid_client"}),
+            &[(
+                "www-authenticate",
+                "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+            )],
+        );
+    }
+
+    // Per RFC 7009 section 2.2: The authorization server responds with HTTP 200
+    // whether the token was revoked or not (to prevent token scanning)
+    let _ = storage::revoke_access_token(&state.db, &req.token).await;
+    let _ = storage::revoke_refresh_token(&state.db, &req.token).await;
+
+    // Return 200 OK with empty response
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap()
 }
 
 async fn handle_refresh_token_grant(
@@ -2001,6 +2090,34 @@ async fn passkey_register_finish(
         )
     })?;
 
+    // Parse serialized passkey to extract fields (cred is private, use JSON introspection)
+    let passkey_data: serde_json::Value = serde_json::from_str(&passkey_json).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to parse passkey JSON: {}", e),
+        )
+    })?;
+
+    // Extract counter from cred.counter
+    let counter = passkey_data
+        .get("cred")
+        .and_then(|c| c.get("counter"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as i64;
+
+    // Extract backup flags from cred
+    let backup_eligible = passkey_data
+        .get("cred")
+        .and_then(|c| c.get("backup_eligible"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+
+    let backup_state = passkey_data
+        .get("cred")
+        .and_then(|c| c.get("backup_state"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+
     // Use credential ID from the request
     let cred_id_b64 = Base64UrlUnpadded::encode_string(req.credential.id.as_bytes());
 
@@ -2009,12 +2126,12 @@ async fn passkey_register_finish(
         &cred_id_b64,
         &session.subject,
         &passkey_json,
-        0,                              // counter - TODO: extract from passkey when we understand the API
-        None,                           // aaguid
-        false,                          // backup_eligible - TODO: extract from passkey
-        false,                          // backup_state - TODO: extract from passkey
-        None,                           // transports
-        req.name.as_deref(),            // Name from request
+        counter,              // Extracted from passkey
+        None,                 // aaguid
+        backup_eligible,      // Extracted from passkey
+        backup_state,         // Extracted from passkey
+        None,                 // transports
+        req.name.as_deref(),  // Name from request
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2138,7 +2255,7 @@ async fn passkey_auth_finish(
         })?;
 
     // Finish authentication
-    let _auth_result = state
+    let auth_result = state
         .webauthn
         .finish_passkey_authentication(&req.credential, &auth_state)
         .map_err(|e| {
@@ -2148,9 +2265,13 @@ async fn passkey_auth_finish(
             )
         })?;
 
-    // Update counter (TODO: extract counter from auth_result when we understand the API)
-    // For now, just update last_used_at
-    // storage::update_passkey_counter(&state.db, &cred_id_b64, new_counter).await?;
+    // Extract counter using public API (AuthenticationResult has accessor methods)
+    let new_counter = auth_result.counter() as i64;
+
+    // Update counter for clone detection
+    storage::update_passkey_counter(&state.db, &cred_id_b64, new_counter)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Determine AMR based on backup state
     let amr = if passkey.backup_eligible == 1 && passkey.backup_state == 1 {
@@ -2306,7 +2427,7 @@ async fn passkey_2fa_finish(
         })?;
 
     // Finish authentication
-    let _auth_result = state
+    let auth_result = state
         .webauthn
         .finish_passkey_authentication(&req.credential, &auth_state)
         .map_err(|e| {
@@ -2323,8 +2444,13 @@ async fn passkey_2fa_finish(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "Passkey not found".to_string()))?;
 
-    // Update counter (TODO: extract counter from auth_result when we understand the API)
-    // storage::update_passkey_counter(&state.db, &cred_id_b64, new_counter).await?;
+    // Extract counter using public API (AuthenticationResult has accessor methods)
+    let new_counter = auth_result.counter() as i64;
+
+    // Update counter for clone detection
+    storage::update_passkey_counter(&state.db, &cred_id_b64, new_counter)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Append passkey method to AMR
     let amr_method = if passkey.backup_eligible == 1 && passkey.backup_state == 1 {

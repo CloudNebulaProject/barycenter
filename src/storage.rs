@@ -1042,6 +1042,22 @@ pub async fn append_session_amr(
     Ok(())
 }
 
+/// Revoke an access token by marking it as revoked (RFC 7009)
+pub async fn revoke_access_token(db: &DatabaseConnection, token: &str) -> Result<(), CrabError> {
+    use entities::access_token::{Column, Entity};
+
+    if let Some(at) = Entity::find()
+        .filter(Column::Token.eq(token))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::access_token::ActiveModel = at.into();
+        active.revoked = Set(1);
+        active.update(db).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,7 +32,11 @@
       "Bash(find:*)",
       "Bash(wc:*)",
       "Bash(cargo fix:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "mcp__context7__query-docs",
+      "Bash(cargo expand:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo metadata:*)"
     ],
     "deny": [],
     "ask": []
