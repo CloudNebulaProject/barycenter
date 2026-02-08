@@ -50,7 +50,8 @@
       "Bash(git -C /home/toasty/ws/nebula/barycenter diff --stat)",
       "Bash(git -C /home/toasty/ws/nebula/barycenter log --oneline -5)",
       "Bash(git -C /home/toasty/ws/nebula/barycenter add Cargo.toml Cargo.lock src/lib.rs src/settings.rs src/web.rs src/authz/)",
-      "Bash(git -C /home/toasty/ws/nebula/barycenter commit -m \"$\\(cat <<''EOF''\nImplement file-driven authorization policy service \\(ReBAC + ABAC\\)\n\nAdd a Zanzibar-style relationship-based access control engine with\nOPA-style ABAC condition evaluation. Policies, roles, resources, and\ngrants are defined in KDL files loaded from a configured directory at\nstartup. Exposes a read-only REST API \\(POST /v1/check, /v1/expand,\nGET /healthz\\) on a dedicated port when authz.enabled = true.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /home/toasty/ws/nebula/barycenter commit -m \"$\\(cat <<''EOF''\nImplement file-driven authorization policy service \\(ReBAC + ABAC\\)\n\nAdd a Zanzibar-style relationship-based access control engine with\nOPA-style ABAC condition evaluation. Policies, roles, resources, and\ngrants are defined in KDL files loaded from a configured directory at\nstartup. Exposes a read-only REST API \\(POST /v1/check, /v1/expand,\nGET /healthz\\) on a dedicated port when authz.enabled = true.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(helm template:*)"
     ],
     "deny": [],
     "ask": []
