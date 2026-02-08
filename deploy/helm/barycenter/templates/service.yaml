@@ -15,5 +15,11 @@ spec:
     targetPort: http
     protocol: TCP
     name: http
+  {{- if .Values.config.authz.enabled }}
+  - port: {{ .Values.config.authz.port | default (add .Values.config.server.port 2) }}
+    targetPort: authz
+    protocol: TCP
+    name: authz
+  {{- end }}
   selector:
     {{- include "barycenter.selectorLabels" . | nindent 4 }}

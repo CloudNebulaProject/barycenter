@@ -30,7 +30,7 @@ RUN apt-get update && \
 
 # Create non-root user
 RUN useradd -r -u 1000 -s /bin/false barycenter && \
-    mkdir -p /app/data /app/config && \
+    mkdir -p /app/data /app/config /app/policies && \
     chown -R barycenter:barycenter /app
 
 WORKDIR /app
@@ -47,8 +47,8 @@ RUN chown -R barycenter:barycenter /app
 # Switch to non-root user
 USER barycenter
 
-# Expose default port
-EXPOSE 8080
+# Expose default ports (OIDC, admin GraphQL, authz API)
+EXPOSE 8080 8081 8082
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

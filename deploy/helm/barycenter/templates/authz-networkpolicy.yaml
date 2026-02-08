@@ -1,0 +1,25 @@
+{{- if and .Values.config.authz.enabled .Values.authz.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "barycenter.fullname" . }}-authz
+  labels:
+    {{- include "barycenter.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "barycenter.selectorLabels" . | nindent 6 }}
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow unrestricted access to the OIDC HTTP port
+  - ports:
+    - port: http
+      protocol: TCP
+  # Restrict authz port to same-namespace pods only
+  - from:
+    - podSelector: {}
+    ports:
+    - port: authz
+      protocol: TCP
+{{- end }}

@@ -23,3 +23,12 @@ data:
 
     [federation]
     trust_anchors = {{ .Values.config.federation.trustAnchors | toJson }}
+    {{- if .Values.config.authz.enabled }}
+
+    [authz]
+    enabled = true
+    {{- if .Values.config.authz.port }}
+    port = {{ .Values.config.authz.port }}
+    {{- end }}
+    policies_dir = {{ .Values.config.authz.policiesDir | quote }}
+    {{- end }}

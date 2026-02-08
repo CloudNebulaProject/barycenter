@@ -118,6 +118,27 @@ config:
   federation:
     trustAnchors: []
 
+  authz:
+    enabled: false
+    # port defaults to server.port + 2 if not set
+    # port: 8082
+    policiesDir: "/app/policies"
+
+# Authorization policy service
+authz:
+  # Inline KDL policy files (rendered into a ConfigMap)
+  # Each key is a filename, value is the KDL policy content
+  policies: {}
+  #   vm_policy.kdl: |
+  #     resource "vm" { ... }
+
+  # OR reference an existing ConfigMap containing .kdl files
+  existingConfigMap: ""
+
+  # NetworkPolicy restricting authz port to same-namespace pods only
+  networkPolicy:
+    enabled: true
+
 # Environment variables for main container
 # Supports full Kubernetes env var specification including valueFrom
 env:

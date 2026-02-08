@@ -17,6 +17,9 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if and .Values.config.authz.enabled (not .Values.authz.existingConfigMap) .Values.authz.policies }}
+        checksum/authz-policies: {{ include (print $.Template.BasePath "/authz-policies-configmap.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -75,6 +78,11 @@ spec:
         - name: http
           containerPort: {{ .Values.config.server.port }}
           protocol: TCP
+        {{- if .Values.config.authz.enabled }}
+        - name: authz
+          containerPort: {{ .Values.config.authz.port | default (add .Values.config.server.port 2) }}
+          protocol: TCP
+        {{- end }}
         {{- if .Values.env }}
         env:
           {{- toYaml .Values.env | nindent 8 }}
@@ -86,6 +94,11 @@ spec:
         {{- if .Values.persistence.enabled }}
         - name: data
           mountPath: /app/data
+        {{- end }}
+        {{- if .Values.config.authz.enabled }}
+        - name: authz-policies
+          mountPath: {{ .Values.config.authz.policiesDir }}
+          readOnly: true
         {{- end }}
         livenessProbe:
           {{- toYaml .Values.livenessProbe | nindent 10 }}
@@ -109,6 +122,11 @@ spec:
       - name: user-sync-secret
         secret:
           secretName: {{ .Values.userSync.existingSecret }}
+      {{- end }}
+      {{- if .Values.config.authz.enabled }}
+      - name: authz-policies
+        configMap:
+          name: {{ if .Values.authz.existingConfigMap }}{{ .Values.authz.existingConfigMap }}{{ else }}{{ include "barycenter.fullname" . }}-authz-policies{{ end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
