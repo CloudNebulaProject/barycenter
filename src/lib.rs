@@ -5,6 +5,7 @@
 
 pub mod admin_graphql;
 pub mod admin_mutations;
+pub mod authz;
 pub mod entities;
 pub mod errors;
 pub mod jobs;

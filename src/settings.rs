@@ -9,6 +9,8 @@ pub struct Settings {
     pub keys: Keys,
     #[serde(default)]
     pub federation: Federation,
+    #[serde(default)]
+    pub authz: AuthzSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +55,32 @@ pub struct Keys {
 pub struct Federation {
     /// List of trust anchor URLs or fingerprints (placeholder for real federation)
     pub trust_anchors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthzSettings {
+    /// Enable the authorization policy service. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Port for the authz REST API (defaults to main port + 2).
+    pub port: Option<u16>,
+    /// Directory containing `.kdl` policy files.
+    #[serde(default = "default_policies_dir")]
+    pub policies_dir: PathBuf,
+}
+
+fn default_policies_dir() -> PathBuf {
+    PathBuf::from("policies")
+}
+
+impl Default for AuthzSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: None,
+            policies_dir: default_policies_dir(),
+        }
+    }
 }
 
 impl Default for Server {

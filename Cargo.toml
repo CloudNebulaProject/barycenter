@@ -72,6 +72,9 @@ async-graphql-axum = "7"
 tokio-cron-scheduler = "0.13"
 bincode = "2.0.1"
 
+# Policy / authorization engine
+kdl = "6"
+
 [dev-dependencies]
 # Existing OIDC/OAuth testing
 openidconnect = { version = "4", features = ["reqwest-blocking"] }

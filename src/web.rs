@@ -190,6 +190,32 @@ pub async fn serve(
             .expect("Admin server failed");
     });
 
+    // Start authorization policy server (if enabled)
+    if state.settings.authz.enabled {
+        let authz_state = std::sync::Arc::new(
+            crate::authz::loader::load_policies(&state.settings.authz.policies_dir)
+                .map_err(|e| miette::miette!("failed to load authz policies: {e}"))?,
+        );
+        let authz_port = state
+            .settings
+            .authz
+            .port
+            .unwrap_or(state.settings.server.port + 2);
+        let authz_addr: SocketAddr = format!("{}:{}", state.settings.server.host, authz_port)
+            .parse()
+            .map_err(|e| miette::miette!("bad authz addr: {e}"))?;
+        let authz_router = crate::authz::web::router(authz_state);
+        let authz_listener = tokio::net::TcpListener::bind(authz_addr)
+            .await
+            .into_diagnostic()?;
+        tracing::info!(%authz_addr, "Authorization policy API listening");
+        tokio::spawn(async move {
+            axum::serve(authz_listener, authz_router)
+                .await
+                .expect("Authz server failed");
+        });
+    }
+
     // Start public server
     tracing::info!(%public_addr, "Public API listening");
     tracing::warn!("Rate limiting should be configured at the reverse proxy level for production");
