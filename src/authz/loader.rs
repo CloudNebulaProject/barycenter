@@ -156,7 +156,7 @@ fn dfs_cycle_check(
 fn build_permission_roles(roles: &HashMap<String, RoleDef>) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
 
-    for (role_name, _) in roles {
+    for role_name in roles.keys() {
         let perms = collect_role_permissions(role_name, roles, &mut HashSet::new());
         for perm in perms {
             map.entry(perm).or_default().push(role_name.clone());

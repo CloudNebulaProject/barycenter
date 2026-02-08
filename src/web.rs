@@ -535,7 +535,7 @@ async fn authorize(
         let requires_2fa = user.requires_2fa == 1  // Admin-enforced 2FA
             || is_high_value_scope(&q.scope)        // Context-based: high-value scope
             || q.max_age.as_ref().and_then(|ma| ma.parse::<i64>().ok())
-                .map_or(false, |ma| ma < 300); // Context-based: max_age < 5 minutes
+                .is_some_and(|ma| ma < 300); // Context-based: max_age < 5 minutes
 
         // If 2FA required but not verified, redirect to 2FA page
         if requires_2fa && sess.mfa_verified == 0 {
@@ -874,8 +874,8 @@ async fn consent_page(
                     urlencoded(&q.scope),
                     urlencoded(&q.redirect_uri),
                     urlencoded(&q.response_type),
-                    urlencoded(&q.code_challenge.as_ref().unwrap_or(&String::new())),
-                    urlencoded(&q.code_challenge_method.as_ref().unwrap_or(&String::new())),
+                    urlencoded(q.code_challenge.as_ref().unwrap_or(&String::new())),
+                    urlencoded(q.code_challenge_method.as_ref().unwrap_or(&String::new())),
                     q.state.as_ref().map(|s| format!("&state={}", urlencoded(s))).unwrap_or_default()
                 );
                 return Redirect::temporary(&format!(
@@ -893,8 +893,8 @@ async fn consent_page(
                 urlencoded(&q.scope),
                 urlencoded(&q.redirect_uri),
                 urlencoded(&q.response_type),
-                urlencoded(&q.code_challenge.as_ref().unwrap_or(&String::new())),
-                urlencoded(&q.code_challenge_method.as_ref().unwrap_or(&String::new())),
+                urlencoded(q.code_challenge.as_ref().unwrap_or(&String::new())),
+                urlencoded(q.code_challenge_method.as_ref().unwrap_or(&String::new())),
                 q.state.as_ref().map(|s| format!("&state={}", urlencoded(s))).unwrap_or_default()
             );
             return Redirect::temporary(&format!("/login?return_to={}", urlencoded(&return_to)))

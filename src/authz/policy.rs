@@ -203,7 +203,7 @@ fn dash_list(node: &kdl::KdlNode) -> Vec<String> {
         .nodes()
         .iter()
         .filter(|n| n.name().value() == "-")
-        .filter_map(|n| first_string_arg(n))
+        .filter_map(first_string_arg)
         .collect()
 }
 
