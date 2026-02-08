@@ -1,0 +1,692 @@
+﻿A Hybrid Authorization Service Architecture for Multi-Tenant Cloud Platforms
+Part I: Foundational Architectural Strategy
+This report outlines the comprehensive architectural design for a centralized, multi-tenant Policy Verification Service. The proposed system is engineered to provide a robust, scalable, and developer-friendly authorization layer for a modern cloud platform. It addresses the dual requirements of enforcing granular, platform-level Role-Based Access Control (RBAC) while simultaneously empowering tenant applications to define and execute their own fine-grained, Attribute-Based Access Control (ABAC) policies. The design prioritizes performance, strong consistency, high availability, and a simple, declarative interface for policy management, with a specific focus on implementation within a Rust-based microservices ecosystem.
+Section 1: Architectural Paradigms for Cloud-Scale Authorization
+The design of a modern, cloud-scale authorization service is predicated on choosing the correct foundational paradigm. The landscape is dominated by two highly influential and proven models: Google's Zanzibar system, which excels at relationship-based authorization at a global scale, and the Open Policy Agent (OPA), a general-purpose engine that provides unparalleled flexibility for attribute-based policy decisions. A thorough analysis of each is essential to inform the optimal architectural direction.
+1.1. The Google Zanzibar Model: Scalable Relationship-Based Access Control (ReBAC)
+Google Zanzibar is a purpose-built, centralized authorization system designed to serve as a single source of truth for permission decisions across hundreds of high-traffic services like Google Drive, YouTube, and Cloud IAM.1 Its core innovation lies in its ability to model and evaluate complex access control policies at a massive scale, handling trillions of access control lists (ACLs) and millions of authorization requests per second with consistently low latency and extremely high availability.3
+Core Concept and Data Model: The Tuple
+The fundamental model of Zanzibar is Relationship-Based Access Control (ReBAC), a paradigm where permissions are derived from relationships between entities.6 ReBAC is a superset of traditional RBAC, capable of modeling not just roles but also complex organizational hierarchies, resource containment (e.g., folders and files), and group memberships.6
+The atom of data in Zanzibar is the "relation tuple," a simple, powerful construct representing a single relationship fact.2 Each tuple follows the format $object\#relation@user$, which can be read as "user has relation to object".3
+For example:
+* document:payments#viewer@user:alice: User Alice is a viewer of the payments document.
+* group:editors#member@user:alice: User Alice is a member of the editors group.
+* document:expenses#editor@group:editors: The editors group has the editor relation on the expenses document.
+This tuple-based model effectively represents authorization data as a directed graph, where objects and users are nodes, and relations are edges. An authorization check, such as "Can Alice edit the expenses document?", becomes a graph traversal problem: is there a path from user:alice to document:expenses via the editor relation? In the example above, such a path exists through the group:editors node.
+Policy Language: Namespace Configuration
+While the tuples represent the data, the "policy" or logic of the system is defined in "namespace configurations".3 These are schemas that define the types of objects and the relations that can exist between them. Crucially, they include "userset rewrite rules," which define how permissions can be inherited or computed.5 These rules use set-based operations like union, intersection, and exclusion to express complex logic in a declarative way.2
+For instance, a namespace for a document system might specify:
+* An editor is also a viewer.
+* An owner is also an editor.
+* A user who is a viewer of a document's parent folder is also a viewer of the document itself.
+This separation of data (tuples) and logic (namespace configuration) is powerful; authorization models can be updated by changing the configuration without needing to modify trillions of stored tuples.5
+Architecture for Scale and Consistency
+Zanzibar's remarkable performance and reliability stem from a sophisticated distributed systems architecture.1 Key components include:
+* Strongly Consistent Datastore: All relation tuples are stored in a globally distributed SQL database like Google's Spanner.1 This provides strong consistency guarantees, ensuring that authorization decisions never reflect stale data (e.g., applying old permissions to newly created content).1
+* Global Replication and Caching: Data is replicated across the globe to be physically closer to clients, much like a Content Delivery Network (CDN).1 The system employs multiple layers of caching to reduce latency, including an outermost indexing system called Leopard designed for rapid checks, as well as caching at the server and inter-service levels.1
+* User-Specifiable Consistency: To balance performance and correctness, Zanzibar introduces "zookies".3 A zookie is an opaque token, effectively a timestamp or transaction ID, returned on every write operation. A client can pass this zookie back on a subsequent read (check) request to guarantee that the check is performed on data that is at least as new as that write. This gives clients the power to trade off latency for consistency on a per-request basis, preventing "new enemy" problems where a permission change has not yet propagated to the replica handling the check.3
+Limitation: Expressiveness for ABAC
+The primary architectural trade-off made by Zanzibar is its limited expressiveness. The model is highly specialized for evaluating relationships and is not designed for Attribute-Based Access Control (ABAC). It cannot express policies that depend on dynamic attributes of the user, resource, or environment. For example, policies involving arithmetic (user.age > 18), string manipulation (resource.name.startsWith("confidential-")), IP address ranges, or JWT claims are outside its scope.10 Google's own engineers acknowledge this limitation and recommend using a separate, more expressive policy engine in conjunction with Zanzibar to close this gap.1
+1.2. The Open Policy Agent (OPA) Model: General-Purpose Policy as Code
+The Open Policy Agent (OPA) is an open-source, general-purpose policy engine that has become a graduated project within the Cloud Native Computing Foundation (CNCF).11 Its core philosophy is to decouple policy decision-making from application logic, allowing policy to be managed as code and enforced uniformly across a diverse technology stack.12
+Core Concept and Data Model: Arbitrary JSON
+Unlike Zanzibar's specialized tuple model, OPA is domain-agnostic. Its fundamental strength is its ability to make policy decisions by evaluating arbitrary structured data, typically JSON, provided as input.11 When a service needs to make a policy decision, it queries OPA, supplying a JSON document containing relevant context. This context can include information about the user making the request, the resource being accessed, and any environmental factors.11
+For example, the input for an API authorization check might look like this:
+
+
+JSON
+
+
+
+
+{
+ "user": {
+   "id": "alice",
+   "roles": ["editor"],
+   "department": "engineering"
+ },
+ "request": {
+   "method": "POST",
+   "path": "/documents/report-q3",
+   "ip_address": "198.51.100.14"
+ },
+ "resource": {
+   "owner": "bob",
+   "sensitivity": "high"
+ }
+}
+
+OPA evaluates this input against its configured policies to produce a decision, which can be a simple boolean or a more complex JSON object.11
+Policy Language: Rego
+OPA policies are written in a high-level declarative language called Rego.11 Inspired by Datalog, a decades-old query language, Rego is purpose-built for expressing policies over complex, hierarchical data structures like JSON.14 It allows authors to focus on what a query should return rather than how it should be executed.14
+Rego's syntax is powerful, supporting:
+* Complex Logic: Rules can be built using logical AND (expressions on separate lines within a rule body) and OR (defining multiple rules with the same name).16
+* Iteration and Comprehensions: The ability to iterate over arrays and objects in the input data.
+* Built-in Functions: A rich standard library for common operations like string manipulation, regular expression matching, arithmetic, JWT decoding, and more.10
+Strength: Expressiveness for ABAC
+The combination of an arbitrary JSON data model and the powerful Rego language makes OPA exceptionally well-suited for implementing Attribute-Based Access Control (ABAC).17 ABAC policies, which grant access based on attributes of the subject, object, and environment, can be expressed naturally and concisely in Rego.10
+For example, a policy stating "Allow users to access high-sensitivity resources only if they are in the same department as the resource owner" can be written as:
+
+
+Code snippet
+
+
+
+
+package http.authz
+
+default allow = false
+
+allow {
+   input.request.method == "GET"
+   input.resource.sensitivity == "high"
+   input.user.department == input.resource.owner_department
+}
+
+This level of dynamic, attribute-based logic is precisely what the Zanzibar model cannot handle.10
+Limitation: Large-Scale Relationship Traversal
+While OPA's flexibility allows it to model relationships and hierarchies within its data documents, it is not a purpose-built graph database. Answering Zanzibar-style questions like "Is user X a member of group Y, which is a member of group Z, which has access to resource A?" can be inefficient at massive scale. This would typically require loading a large graph of relationship data into OPA's in-memory store or writing complex recursive rules in Rego.19 This is less performant and scalable than Zanzibar's architecture, which is specifically optimized for low-latency traversal of trillions of such relationships.10
+1.3. Comparative Analysis and Architectural Choice
+The distinct strengths and weaknesses of the Zanzibar and OPA paradigms map directly to the dual requirements of the target cloud platform. The platform itself requires a scalable RBAC system capable of handling deep hierarchies and group structures, a perfect fit for Zanzibar. Concurrently, tenant applications require the flexibility of ABAC to define custom, context-aware rules, a task for which OPA is ideally suited.
+A direct comparison clarifies why a single-paradigm approach would be suboptimal.
+
+
+Feature
+	Google Zanzibar (ReBAC)
+	Open Policy Agent (OPA)
+	Relevance to User Query
+	Primary Model
+	Relationship-Based Access Control (ReBAC) 2
+	General-Purpose Policy Engine 11
+	Both models are relevant; the query requires ReBAC for platform roles and a policy engine for application ABAC.
+	Data Model
+	Relation Tuples (object#relation@user) 3
+	Arbitrary JSON Documents 11
+	The tuple model is optimized for RBAC/ReBAC. The JSON model is required for flexible ABAC.
+	Policy Language
+	Namespace Configurations (Userset Rewrites) 5
+	Rego (Declarative Query Language) 14
+	Namespace configs are good for inheritance. Rego is essential for expressing complex ABAC conditions.
+	Core Strength
+	Global-scale, low-latency graph traversal 1
+	High expressiveness for complex, attribute-based rules 10
+	Zanzibar's strength maps to the granular RBAC requirement. OPA's strength maps to the application ABAC requirement.
+	Core Weakness
+	Limited expressiveness; cannot handle ABAC 1
+	Not optimized for massive-scale relationship graph traversal 19
+	A pure Zanzibar system fails the ABAC requirement. A pure OPA system would be inefficient for platform-wide RBAC.
+	Scalability Model
+	Horizontal scaling via replication and caching 1
+	Deployed as a sidecar or centralized service; scaling depends on data size and policy complexity 20
+	The Zanzibar model is proven for cloud-scale authorization. OPA's model works well when data is scoped per-request.
+	Consistency Model
+	Strong consistency with user-specifiable staleness (zookies) 3
+	Depends on deployment; typically eventual consistency for policy/data updates 21
+	The strong consistency of Zanzibar is critical for a foundational cloud service.
+	Multi-Tenancy
+	Can be implemented by namespacing tuples 22
+	Can be implemented by namespacing data and policies within the JSON model 23
+	Both can support multi-tenancy, but the implementation details are critical for ensuring isolation.
+	The Verdict: A Hybrid Architecture
+The analysis demonstrates that neither model, in isolation, can fully and efficiently satisfy all requirements. A pure Zanzibar approach would fail to provide the necessary expressiveness for application-level ABAC. A pure OPA approach would struggle to performantly manage the global graph of relationships, roles, and hierarchies inherent in a cloud platform's own RBAC system.
+Therefore, the most robust and performant solution is a hybrid architecture. This design will leverage a Zanzibar-inspired system as the core for managing relationships and a tightly integrated, OPA-inspired engine for evaluating attribute-based conditions. This approach is not merely a compromise but a synthesis that combines the strengths of both paradigms while mitigating their respective weaknesses.
+Section 2: The Recommended Hybrid Blueprint
+The proposed architecture integrates a Zanzibar-inspired Relationship Store with an OPA-inspired Policy Engine. This hybrid model provides a single, unified authorization service that exposes a consistent API to clients while internally leveraging the best-suited technology for each part of an authorization decision. The entire system is designed from the ground up with multi-tenancy as a core, non-negotiable principle.
+2.1. Architecture Overview: The Best of Both Worlds
+The service is composed of two primary internal components:
+1. The Relationship Store (Zanzibar-inspired): This is the stateful core of the authorization service. It is a highly available, strongly consistent, and scalable datastore responsible for persisting and querying all relationship tuples. It serves as the source of truth for all structural authorization data, including:
+   * Platform-level RBAC assignments (e.g., user U has role R on tenant T).
+   * Resource hierarchies (e.g., folder F is the parent of document D).
+   * Group memberships (e.g., user U is a member of group G).
+   * Ownership and other static relations (e.g., user U is the owner of resource X). This component will expose an external API with methods analogous to Zanzibar's: Check, Write, Read, Expand, and Watch.2
+2. The Policy Engine (OPA-inspired): This is a stateless, high-performance evaluation engine. Its sole responsibility is to execute attribute-based policies written in a Rego-like language. It accepts a JSON object as input—containing attributes of the principal, resource, and request context—and returns a simple boolean decision. It does not persist any state of its own; it is a pure function that evaluates policy against data.
+The key to this architecture is the interaction model between these two components. The Policy Engine is not a standalone service that clients interact with directly. Instead, it acts as a specialized subroutine called by the Relationship Store. This creates a clean, hierarchical dependency and a single point of entry for all authorization requests.
+The Authorization Flow
+A typical authorization check proceeds as follows:
+1. An external client (e.g., a microservice) sends a request to the authorization service's public API: Check(principal, permission, resource, context).
+2. The request is received by the Relationship Store.
+3. The Relationship Store begins traversing its graph of relationship tuples to determine if a path exists that grants the requested permission.
+4. During the traversal, it may encounter a relationship that is conditional on an ABAC policy. This is modeled as a special kind of relation that points to a policy rule instead of another user or group (akin to a "caveat" 25).
+5. Upon encountering such a conditional relationship, the Relationship Store pauses its graph walk. It constructs a JSON input object containing the principal, resource, and any context attributes provided in the original request.
+6. It makes a synchronous, internal call to the Policy Engine, providing the name of the policy to evaluate and the constructed JSON input.
+7. The Policy Engine executes the corresponding Rego rule and returns a simple true or false decision.
+8. The Relationship Store receives the decision. If true, the conditional path is considered valid, and the graph walk continues. If false, that path is abandoned.
+9. If a valid, unconditional path is found, or a conditional path evaluates to true, the Relationship Store returns allowed: true to the client. If all possible paths are exhausted without success, it returns allowed: false.
+This flow elegantly solves the core problem: the component best at graph traversal (Relationship Store) handles the structural part of the check, and when it needs to evaluate a complex, attribute-based predicate, it delegates that specific task to the component designed for that purpose (Policy Engine).
+2.2. Multi-Tenancy as a First-Class Citizen
+In a multi-tenant cloud platform, tenant isolation is the most critical security requirement. The architecture must not only prevent cross-tenant access but make it structurally impossible.23 This principle is enforced at every layer of the design.
+Data Model Impact
+The foundation of tenant isolation lies within the data model itself. Rather than treating tenant_id as a separate metadata column, it becomes an integral part of the unique identifiers for all objects and subjects within the relation tuple. This creates a partitioned data namespace.
+A tuple will not be document:docA#viewer@user:alice. Instead, it will be:
+tenant/t1:document/docA#viewer@tenant/t1:user/alice
+This namespacing scheme is applied universally:
+* Object: tenant/{tenant_id}/{object_type}/{object_id}
+* Subject (User): tenant/{tenant_id}/user/{user_id}
+* Subject (Group): tenant/{tenant_id}/group/{group_id}
+The immediate benefit of this approach is that it makes cross-tenant data leakage via faulty queries impossible. A query operating within the context of tenant/t1 can never accidentally match a tuple belonging to tenant/t2, because the fundamental string identifiers of the objects and subjects will not match. Isolation is enforced at the lowest possible level of the system.
+API Impact
+All external API endpoints are explicitly scoped to a tenant via the URL path. This is a standard and effective pattern for multi-tenant services.24
+* Check Request: POST /v1/tenants/{tenant_id}/check
+* Write Request: POST /v1/tenants/{tenant_id}/relationships
+* Policy Management: GET /v1/tenants/{tenant_id}/policies
+The service's API gateway will extract the {tenant_id} from the path and pass it to the handler. This tenant_id is then used to construct the fully-qualified identifiers for all internal operations. For example, a CheckRequest body might contain a resource_id of vm-123, but the internal logic will transform this into tenant/t1:vm/vm-123 before querying the Relationship Store.
+Policy Evaluation Impact
+Tenant isolation extends to the evaluation of ABAC policies. When the Relationship Store invokes the Policy Engine, the JSON input provided will always contain the tenant's context, including the tenant_id and any tenant-specific attributes (e.g., corporate IP ranges, subscription tier) that have been configured.20 This ensures that a policy like request.ip in tenant.corporate_ips is evaluated using the IP list belonging to the correct tenant, preventing policy logic from one tenant from being applied to another.
+Part II: Policy and Data Model Design
+A powerful authorization engine is only as useful as the language used to control it. For this service to succeed, defining policies must be an intuitive and straightforward experience for developers building on the cloud platform. This requires moving beyond existing, expert-oriented policy languages to a higher-level abstraction that prioritizes simplicity and readability without sacrificing the power of the underlying hybrid engine.
+Section 3: A Developer-First Policy Language
+The user's requirement that policies be "simple to define" is a direct challenge to the status quo in the authorization space. Existing powerful languages, while technically capable, often present a steep learning curve.
+3.1. Evaluating Existing Languages for Simplicity
+* Rego (OPA): Rego is an exceptionally powerful and expressive language.10 However, its syntax is based on Datalog, a logic programming paradigm that is unfamiliar to the majority of application developers.16 Writing effective Rego requires thinking about authorization as a query over hierarchical data, which involves a significant mental model shift. The language's focus on low-level manipulation of JSON data means the policy author must be intimately aware of the input data's structure, rather than focusing purely on the high-level authorization intent.19 This complexity makes it a poor fit for the goal of simplicity.
+* Polar (Oso): Oso's Polar language represents a significant step towards a more developer-friendly experience. It is purpose-built for application authorization and introduces higher-level primitives like actor, resource, and role, which align more closely with how developers think about their applications.19 Despite these improvements, Polar is still a logic programming language at its core.30 Its execution model, based on finding variable bindings that satisfy a set of rules, can be non-obvious to developers accustomed to imperative or object-oriented programming.30
+The fundamental issue with both languages is that they are designed for maximum expressiveness, which inherently introduces complexity. For the vast majority of common RBAC and ABAC patterns, this full power is not required, and the associated learning curve acts as a barrier to adoption.
+3.2. Proposal: A Declarative TOML-Based Policy Format
+To bridge this simplicity gap, this design proposes a custom, high-level policy format based on TOML (Tom's Obvious, Minimal Language). TOML is an ideal choice for human-authored configuration files due to its clear, minimal syntax, first-class support for comments, and unambiguous, strongly-typed structure. It is demonstrably superior for this use case than JSON (which lacks comments) and YAML (which is notoriously complex, whitespace-sensitive, and prone to parsing ambiguities).32
+The central concept of this approach is to treat the user-facing policy format as a high-level abstraction. The TOML file is not directly interpreted at runtime. Instead, when a developer submits a policy file to the service, it is compiled into the optimized, low-level representations required by the hybrid engine's components:
+* RBAC rules and relationships defined in the TOML are compiled into a set of relation tuples and userset rewrite rules for the Relationship Store.
+* ABAC rules defined in the TOML are compiled into efficient Rego policies for the Policy Engine.
+This compilation step completely decouples the developer experience from the implementation details of the authorization engine. Developers interact with a simple, declarative, and purpose-built DSL, while the service can leverage the raw power and performance of the underlying Zanzibar and OPA paradigms.
+Structure of a Policy File
+A single TOML policy file will be a self-contained unit that defines the authorization model for a set of resources. It will be structured with clear sections:
+* [metadata]: Contains metadata about the policy, such as its name, description, and whether it's a platform-level policy or an application-specific one.
+* [[resource]]: An array of tables, where each table defines a resource type (e.g., compute_instance), the relations it can have (e.g., owner, viewer), and the permissions that can be checked against it (e.g., start, stop).
+* [[role]]: An array of tables defining RBAC roles. Each role has a name and a list of permissions it grants. Roles can also inherit permissions from other roles, simplifying policy management.
+* [[policy]]: An array of tables defining ABAC rules. Each policy links a set of principals (users or groups) to permissions under a specific condition. The condition is expressed using a simple, intuitive expression language that compiles directly to Rego.
+This unified structure allows a developer to understand the complete authorization logic for a resource by looking at a single file, even when that logic is a hybrid of RBAC and ABAC.
+3.3. Policy Language Evaluation Table
+The decision to introduce a new DSL is justified by a direct comparison against the alternatives, focusing on the primary user constraint of simplicity.
+
+
+Criterion
+	Rego (OPA)
+	Polar (Oso)
+	Proposed TOML DSL
+	Learning Curve
+	High. Requires understanding logic programming and Datalog concepts.27
+	Medium. More intuitive primitives, but still a logic programming language.30
+	Low. Familiar configuration file syntax. Logic is expressed in simple, constrained blocks.
+	Readability
+	Medium. Can become dense and difficult to parse for complex policies.
+	High. Designed to be readable, but logic flow can be non-obvious.
+	Very High. Clear key-value pairs and section headers make intent explicit.34
+	Expressiveness
+	Very High. General-purpose language can express almost any policy.10
+	High. Purpose-built for authorization, supports complex patterns.19
+	Medium (by design). Covers common RBAC and ABAC patterns, sacrificing esoteric capabilities for simplicity.
+	Boilerplate
+	Medium. Requires defining package and rule structure for every policy.
+	Low. Primitives like actor and resource reduce boilerplate.19
+	Very Low. The structure of the TOML file provides the context, requiring minimal boilerplate.
+	Tooling/Ecosystem
+	Excellent. Mature ecosystem with VS Code extensions, playground, and testing tools.37
+	Good. Growing ecosystem with REPL and debugging tools.38
+	New. Would require development of custom tooling (e.g., validator, linter, test framework).
+	Suitability for Non-Experts
+	Low. Primarily a tool for security engineers or developers with specialized training.27
+	Medium. More accessible than Rego, but still requires a conceptual shift.
+	High. Designed to be understood and authored by any application developer.
+	Section 4: Modeling a Multi-Tenant Authorization Domain
+With the policy language defined, the next step is to establish the canonical schema for the entities within the authorization model and demonstrate how they are used in practical policy definitions.
+4.1. Core Entity Schema
+All entities within the system are identified by a unique, string-based URI. This standardized format ensures clarity and prevents identifier collisions across different tenants and entity types. The tenant ID is always the first component of the identifier, enforcing the multi-tenancy principle at the schema level.
+* Tenant: A top-level container for all other entities.
+   * Format: tenant/{id}
+   * Example: tenant/d8b8f8a0-f8f8-4f8f-8f8f-8f8f8f8f8f8f
+* User: An end-user identity.
+   * Format: tenant/{id}/user/{user_id}
+   * Example: tenant/t1/user/alice
+* Service Account: A non-human identity for applications or services.
+   * Format: tenant/{id}/service_account/{sa_id}
+   * Example: tenant/t1/service_account/billing-service
+* Group: A collection of other principals (users, service accounts, or other groups).
+   * Format: tenant/{id}/group/{group_name}
+   * Example: tenant/t1/group/administrators
+* Resource: An object within the cloud platform that is subject to access control.
+   * Format: tenant/{id}/{resource_type}/{resource_id}
+   * Example: tenant/t1/vm/vm-a1b2c3d4
+* Role: A named collection of permissions defined within a policy file. Roles are implicitly scoped to the tenant that owns the policy.
+4.2. Example Policy Definitions in TOML
+The following examples illustrate how the TOML-based DSL can be used to define both simple RBAC and complex, hybrid RBAC+ABAC policies.
+RBAC Example (Cloud Platform): Managing Virtual Machines
+This policy defines a standard RBAC model for controlling access to virtual machine (VM) resources within a tenant. It establishes two roles, vm_viewer and vm_admin, with the latter inheriting permissions from the former.
+
+
+Ini, TOML
+
+
+
+
+# File: vm_policy.toml
+
+[metadata]
+name = "Virtual Machine Access Policy"
+description = "Defines roles for viewing and managing virtual machines."
+# This flag indicates the policy applies to platform resources managed by tenants.
+tenant_policy = true
+
+# Define the 'vm' resource type, its relations, and associated permissions.
+[[resource]]
+type = "vm"
+relations = ["owner", "viewer"]
+permissions = ["start", "stop", "view_console"]
+
+# Define the 'vm_viewer' role.
+[[role]]
+name = "vm_viewer"
+# Grants a single permission. The permission is namespaced with the resource type.
+permissions = ["vm:view_console"]
+
+# Define the 'vm_admin' role.
+[[role]]
+name = "vm_admin"
+# This role inherits all permissions from the 'vm_viewer' role.
+includes = ["vm_viewer"]
+# It also grants additional permissions.
+permissions = ["vm:start", "vm:stop"]
+
+Compilation and Analysis:
+When this TOML file is submitted to the service, the "compiler" generates the following underlying artifacts:
+1. Zanzibar Namespace Configuration: It updates the namespace configuration for the vm object type, defining the owner and viewer relations. It also creates userset rewrite rules to connect the permissions to the roles. For example:
+   * permission:view_console is granted if the user has the vm_viewer role OR the vm_admin role.
+   * permission:start is granted if the user has the vm_admin role.
+2. Zanzibar Tuples: The policy itself does not create tuples. Tuples are created via the WriteRelationships API endpoint when a user is actually assigned a role. For example, to make a user an admin on a specific VM, a client would write the tuple: tenant/t1:vm/vm-123#vm_admin@tenant/t1:user/bob. The authorization service would then use the compiled rules to determine that Bob has start, stop, and view_console permissions on that VM.
+ABAC Example (Tenant Application): Conditional Invoice Access
+This policy is for a hypothetical tenant application (e.g., an accounting service) running on the cloud platform. It defines a more complex rule: users belonging to the "finance" group can view invoices, but only during standard business hours and from a pre-approved corporate IP address range.
+
+
+Ini, TOML
+
+
+
+
+# File: invoice_policy.toml
+
+[metadata]
+name = "Invoice Viewing Policy"
+description = "Allows finance team to view invoices under specific conditions."
+# This flag indicates the policy is for a tenant's own application.
+application_policy = true
+
+# Define the 'invoice' resource type and its permissions.
+[[resource]]
+type = "invoice"
+permissions = ["view", "pay"]
+
+# Define the conditional access policy.
+[[policy]]
+name = "AllowFinanceViewDuringBusinessHoursFromCorporateNetwork"
+effect = "allow"
+permissions = ["invoice:view"]
+# This policy applies to any principal that is a member of the 'finance' group.
+principals = ["group:finance"]
+# The condition under which the permission is granted.
+condition = """
+request.time.hour >= 9 &&
+request.time.hour < 17 &&
+request.ip in tenant.corporate_ips
+"""
+
+Compilation and Analysis:
+This hybrid policy compiles into artifacts for both engines:
+1. Zanzibar Namespace Configuration & Tuples: The principals = ["group:finance"] line creates a link in the Zanzibar model. A special relation is defined, for example, invoice#view:conditional@policy:AllowFinance.... An authorization check for invoice:view will traverse the graph and find this conditional link if the user is a member of the finance group. The finance group itself is managed as standard Zanzibar tuples (e.g., tenant/t1:group/finance#member@tenant/t1:user/carol).
+2. Rego Policy: The condition block is compiled into a Rego rule stored by the Policy Engine. The rule would look something like this:
+Code snippet
+package policies.AllowFinanceViewDuringBusinessHoursFromCorporateNetwork
+
+allow {
+   input.request.time.hour >= 9
+   input.request.time.hour < 17
+   input.request.ip in input.tenant.corporate_ips
+}
+
+When an authorization check is performed for Carol viewing an invoice, the Relationship Store first verifies her membership in the finance group. Upon finding the conditional link, it calls the Policy Engine with the compiled Rego rule and a JSON object containing the current request's time, IP address, and the tenant's configured corporate IPs. Only if the Policy Engine returns true is the permission ultimately granted.
+Part III: Rust Implementation and API Specification
+This section provides a concrete technical blueprint for constructing the Policy Verification Service using the Rust programming language and its ecosystem. It details the choice of web framework, core libraries, data persistence strategies, and provides a complete specification for the service's RESTful API, including explicit Rust type definitions.
+Section 5: Service Architecture and Technology Choices
+The selection of foundational technologies is critical for building a service that is performant, reliable, and maintainable. The choices below are tailored to the specific requirements of a high-throughput, low-latency authorization service within a modern cloud-native environment.
+5.1. Web Framework: Axum
+For the web framework, Axum is the recommended choice. While other frameworks like Actix-web are also known for their high performance, Axum offers several distinct advantages that make it particularly well-suited for this project 39:
+   * Deep Tokio Integration: Axum is developed and maintained by the Tokio team, ensuring seamless integration with the entire Tokio ecosystem, including tracing for observability, hyper for the HTTP server, and tower for a rich ecosystem of middleware.41 This tight integration simplifies dependencies and guarantees compatibility.
+   * Ergonomics and Composability: Axum's design emphasizes developer experience. Its use of traits for extractors (e.g., State, Json, Path) and its functional handler style lead to clean, composable, and highly testable code.41 State management is explicit and type-safe, which is crucial for a complex application like an authorization service.
+   * Middleware Architecture: Axum's middleware system, built on tower::Service, is exceptionally powerful and flexible. It allows for the clean separation of concerns, such as authentication, logging, and metrics, from the core business logic of the API handlers.40
+While Actix-web's actor-based model is powerful, Axum's more conventional async/await and middleware-centric approach is often easier to reason about for teams and aligns well with the request-response nature of a REST API.39
+5.2. Core Authorization Logic: A Bespoke Implementation
+While the Rust ecosystem offers existing authorization libraries like casbin-rs 43 and the open-source version of oso 46, the unique requirements of the hybrid Zanzibar/OPA architecture necessitate a custom implementation of the core logic.
+   * Relationship Store: The graph traversal and consistency logic inspired by Zanzibar does not have a direct, off-the-shelf equivalent in a Rust library. This component will need to be built specifically for this service, implementing the tuple storage, query, and expansion algorithms.
+   * Policy Engine: For the ABAC component, rather than building a Rego interpreter from scratch, the service can integrate with the official OPA engine. This can be done by embedding OPA as a library (if Go/C bindings are used) or, more simply and robustly, by running OPA as a sidecar process and communicating with it over a local gRPC or HTTP API. This approach leverages the highly optimized and battle-tested OPA evaluation engine without needing to re-implement it.
+5.3. Data Persistence and Caching
+   * Persistence: The Relationship Store's correctness hinges on a database that provides strong, serializable consistency guarantees. While Google Spanner is the canonical choice for Zanzibar, a self-hosted cloud platform can use alternatives like CockroachDB or TiDB. These distributed SQL databases are designed for horizontal scalability and strong consistency, making them excellent fits. For interacting with the database from Rust, the sqlx crate is the recommended choice due to its compile-time query checking, asynchronous nature, and direct support for databases like PostgreSQL (which CockroachDB is wire-compatible with).
+   * Caching: A multi-layered caching strategy is non-negotiable for achieving the required low latency.1
+   1. L1 - In-Memory Cache: Each service instance will maintain a local, in-memory cache for frequently accessed data, such as hot tuples and compiled Rego policies. The moka crate is an excellent choice, providing a high-performance, concurrent, and bounded cache with support for various eviction policies (e.g., LFU, LRU).
+   2. L2 - Distributed Cache: A shared, distributed cache like Redis will be used as a second caching layer. This cache will store the results of expensive computations, such as the full expansion of a user's permissions, reducing redundant queries to the primary database.
+Section 6: RESTful API Design and Rust Type Definitions
+The service's public interface will be a well-defined, RESTful API. Adherence to REST principles ensures that the API is predictable, scalable, and easy for client applications to consume.49
+6.1. API Design Principles
+   * Resource-Oriented: URIs will represent resources (e.g., /policies, /relationships), not actions. HTTP verbs (GET, POST, DELETE) will be used to operate on these resources.51
+   * Statelessness: Each request from a client must contain all information needed to process it. The server will not maintain any session state between requests. Authentication will be handled via bearer tokens on every call.49
+   * Versioning: All API endpoints will be versioned (e.g., /v1/...) to allow for future evolution without breaking existing clients.
+   * Tenant Scoping: As established previously, all resource paths will be nested under /v1/tenants/{tenant_id}/, ensuring strict data partitioning at the API boundary.
+6.2. API Endpoint Specification
+The following table specifies the primary endpoints for the Policy Verification Service.
+Endpoint
+	HTTP Method
+	Path
+	Request Body
+	Success Response
+	Error Responses
+	Check Permission
+	POST
+	/v1/tenants/{tenant_id}/check
+	CheckRequest
+	200 OK with CheckResponse
+	400, 401, 403, 404, 500
+	Expand Permissions
+	GET
+	/v1/tenants/{tenant_id}/expand
+	(Query Params)
+	200 OK with ExpandResponse
+	400, 401, 403, 404, 500
+	Write Relationships
+	POST
+	/v1/tenants/{tenant_id}/relationships
+	WriteRelationshipsRequest
+	200 OK with WriteRelationshipsResponse
+	400, 401, 403, 500
+	Read Relationships
+	GET
+	/v1/tenants/{tenant_id}/relationships
+	(Query Params)
+	200 OK with ReadRelationshipsResponse
+	400, 401, 403, 500
+	Delete Relationships
+	DELETE
+	/v1/tenants/{tenant_id}/relationships
+	DeleteRelationshipsRequest
+	204 No Content
+	400, 401, 403, 500
+	Create/Update Policy
+	PUT
+	/v1/tenants/{tenant_id}/policies/{policy_name}
+	TOML Policy File (text/plain)
+	200 OK with PolicyMetadata
+	400, 401, 403, 500
+	Get Policy
+	GET
+	/v1/tenants/{tenant_id}/policies/{policy_name}
+	(None)
+	200 OK with TOML Policy File
+	401, 403, 404, 500
+	List Policies
+	GET
+	/v1/tenants/{tenant_id}/policies
+	(None)
+	200 OK with ListPoliciesResponse
+	401, 403, 500
+	Delete Policy
+	DELETE
+	/v1/tenants/{tenant_id}/policies/{policy_name}
+	(None)
+	204 No Content
+	401, 403, 404, 500
+	6.3. Core Rust Type Definitions
+Defining explicit structs for all API models is a cornerstone of building robust and secure services in Rust. The serde crate will be used for serialization and deserialization, and uuid for strongly-typed identifiers. The use of these types with Axum's Json extractor provides automatic, compile-time-enforced validation of incoming request bodies. This prevents malformed data from ever reaching the application logic, a significant security advantage.
+
+
+Rust
+
+
+
+
+// main_types.rs
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+// --- Core Entities ---
+
+#
+pub struct TenantId(Uuid);
+
+#
+pub struct PrincipalId(String); // e.g., "tenant/{id}/user/alice"
+
+#
+pub struct ResourceId(String); // e.g., "tenant/{id}/vm/vm-123"
+
+#
+pub struct Permission(String); // e.g., "vm:start"
+
+#
+pub struct Relation(String); // e.g., "owner"
+
+#
+pub struct PolicyName(String);
+
+// --- API Models ---
+
+// POST /v1/tenants/{tenant_id}/check
+#
+pub struct CheckRequest {
+   pub principal: PrincipalId,
+   pub permission: Permission,
+   pub resource: ResourceId,
+   // Arbitrary JSON context for ABAC policies (e.g., request IP, time).
+   #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+   pub context: serde_json::Value,
+}
+
+#
+pub struct CheckResponse {
+   pub allowed: bool,
+   // Opaque token representing the consistency level of the decision.
+   pub zookie: String,
+}
+
+// POST /v1/tenants/{tenant_id}/relationships
+#
+pub struct RelationshipTuple {
+   pub object: ResourceId,
+   pub relation: Relation,
+   pub subject: PrincipalId,
+}
+
+#
+pub struct WriteRelationshipsRequest {
+   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+   pub writes: Vec<RelationshipTuple>,
+   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+   pub deletes: Vec<RelationshipTuple>,
+}
+
+#
+pub struct WriteRelationshipsResponse {
+   // A zookie that can be used in subsequent checks to ensure they see this write.
+   pub zookie: String,
+}
+
+// GET /v1/tenants/{tenant_id}/policies
+#
+pub struct PolicyMetadata {
+   pub name: PolicyName,
+   pub description: String,
+   pub created_at: chrono::DateTime<chrono::Utc>,
+   pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#
+pub struct ListPoliciesResponse {
+   pub policies: Vec<PolicyMetadata>,
+}
+
+Section 7: Integrating with OAuth and JWT
+The Policy Verification Service must not handle user authentication (e.g., passwords) directly. Instead, it will integrate with the cloud platform's central OAuth 2.0 Identity Provider (IdP). All API requests will be authenticated by validating a JSON Web Token (JWT) presented as a bearer token. This process cleanly separates the concern of authentication (AuthN) from authorization (AuthZ).
+7.1. Authentication Middleware
+A critical component of the service is an Axum middleware layer that runs before any API handler. This middleware is solely responsible for authentication. Its logic is as follows:
+   1. Intercept every incoming HTTP request.
+   2. Extract the token from the Authorization: Bearer <token> header. If the header is missing or malformed, reject the request with a 401 Unauthorized status code.
+   3. Validate the extracted JWT.
+   4. If validation is successful, parse the claims from the token and construct a trusted Principal object.
+   5. Inject this Principal object into the Axum request extensions, making it available to downstream handlers.
+   6. If validation fails for any reason (e.g., invalid signature, expired token), reject the request with a 401 Unauthorized status code.
+This pattern ensures that the core API handlers can be written with the guarantee that if they are executed, the request has already been successfully authenticated. The handler's logic can focus exclusively on the authorization decision.
+7.2. JWT Validation
+The middleware will use a mature and well-vetted Rust JWT library, such as jsonwebtoken 52 or jwt-simple 53, to perform validation. Using a dedicated library is crucial for security, as it correctly handles cryptographic operations and protects against common JWT vulnerabilities. The validation process will be comprehensive 54:
+   1. Signature Verification: The token's signature will be verified against the public keys of the IdP. These keys will be fetched from the IdP's public JSON Web Key Set (JWKS) endpoint. The keys should be cached with a reasonable TTL to avoid fetching them on every request. The kid (Key ID) header in the JWT will be used to select the correct key from the set.
+   2. Issuer (iss) Validation: The iss claim in the token must exactly match the expected issuer URI of the cloud platform's IdP.
+   3. Audience (aud) Validation: The aud claim must contain an identifier that designates the Policy Verification Service as an intended audience for the token. This prevents tokens issued for other services from being used here.
+   4. Temporal Validation: The exp (expiration time) and nbf (not before) claims must be checked against the current time to ensure the token is currently valid. A small clock skew leeway should be configured to account for minor time differences between servers.
+Crates like axum-jwt-auth provide pre-built components and patterns for integrating this type of validation logic seamlessly into Axum applications.56
+7.3. Populating the Request Context
+Once a JWT is successfully validated, its payload (claims) contains trusted information about the caller. The middleware will parse these claims to construct an internal, strongly-typed representation of the principal.
+
+
+Rust
+
+
+
+
+// principal.rs
+
+// This struct is created by the authentication middleware and injected
+// into the request extensions. It is the trusted representation of the caller.
+#
+pub struct AuthenticatedPrincipal {
+   pub id: PrincipalId, // e.g., "tenant/t1/user/alice"
+   pub tenant_id: TenantId,
+   // Additional claims from the token can be stored here if needed
+   // for context, e.g., session ID, authentication method, etc.
+}
+
+// An Axum extractor to easily access the principal in handlers.
+#[async_trait]
+impl<S> FromRequestParts<S> for AuthenticatedPrincipal
+where
+   S: Send + Sync,
+{
+   type Rejection = (StatusCode, &'static str);
+
+   async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+       parts.extensions
+          .get::<AuthenticatedPrincipal>()
+          .cloned()
+          .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Principal not found in request. Is the auth middleware configured correctly?"))
+   }
+}
+
+With this extractor, an API handler's signature becomes clean and type-safe. The framework ensures the handler only runs if a valid AuthenticatedPrincipal is present.
+
+
+Rust
+
+
+
+
+// api_handler.rs
+
+async fn handle_check(
+   // The extractor ensures we have a valid, authenticated principal.
+   principal: AuthenticatedPrincipal,
+   // The extractor ensures the request body is a valid CheckRequest.
+   Json(request): Json<CheckRequest>,
+) -> impl IntoResponse {
+   //... authorization logic here...
+   // The handler can trust that `principal` is authentic and that `request`
+   // conforms to the defined struct.
+}
+
+Part IV: Operational Excellence and Future Roadmap
+A theoretically sound architecture is insufficient for a foundational cloud service. The design must also address the critical non-functional requirements of performance, scalability, high availability, and correctness under load. This final part details the operational strategies necessary for production readiness and outlines a roadmap for future enhancements.
+Section 8: Performance, Scalability, and High Availability
+The service must deliver authorization decisions with extremely low latency and maintain high availability, as it sits on the critical path of nearly every operation in the cloud platform.
+8.1. Low-Latency by Design: Caching and Replication
+An aggressive, multi-layered caching strategy is the primary mechanism for achieving sub-10ms response times for the vast majority of requests.48 This approach is directly inspired by the architecture of Google's Zanzibar.1
+   1. Local Cache (L1): Each API server instance will maintain a high-performance, in-memory cache using a library like moka. This cache will store the results of recent Check requests and frequently accessed relationship data. Serving a request from this local cache can take mere microseconds, avoiding any network overhead.
+   2. Distributed Cache (L2): A shared distributed cache, such as a Redis cluster, will serve as a second layer. This cache will hold data that is useful across multiple server instances, such as the results of Expand operations or compiled policy artifacts. This reduces the load on the persistent database for common, read-heavy operations.
+   3. Leopard-style Indexing: For certain common and complex relationship types (e.g., deeply nested folder hierarchies), the system can maintain a pre-computed, denormalized index. This index, similar to Zanzibar's Leopard system, would allow the service to answer certain queries by performing a simple lookup in the index rather than executing a costly recursive graph traversal in the primary database.1
+In addition to caching, the core data must be replicated across multiple physical locations (availability zones and, eventually, geographic regions). This not only provides resilience against failures but also allows requests to be routed to the nearest replica, minimizing network latency for a global user base.1
+8.2. Ensuring Correctness: The Consistency Model
+In an authorization system, correctness is paramount. Applying stale permissions can lead to severe security breaches.1
+   * Strong Consistency at the Core: The persistent datastore for the Relationship Store (e.g., CockroachDB) must be configured to provide strong, serializable consistency for all write operations. This guarantees that once a write is acknowledged, it is durable and visible to all subsequent transactions, forming the bedrock of the system's correctness.
+   * User-Specified Consistency (zookies): The system will implement the zookie mechanism pioneered by Zanzibar to provide tunable, client-controlled consistency.3
+   1. Every write operation (e.g., via the WriteRelationships endpoint) will return an opaque zookie string in its response. This zookie represents a logical point in time in the system's history.
+   2. Clients can optionally include this zookie in subsequent read requests (e.g., Check).
+   3. When a request includes a zookie, the service is obligated to process that request against a view of the data that is at least as recent as the point in time represented by the zookie. This may require bypassing caches or routing the request to a specific database replica that is guaranteed to be up-to-date.
+This design provides a powerful trade-off. For non-critical reads, clients can omit the zookie to get the fastest possible response, potentially from a slightly stale cache. For critical workflows where "read-your-writes" semantics are required (e.g., verifying a permission immediately after granting it), the client can use the zookie to enforce strong consistency. This transforms consistency from a rigid, system-wide setting into a flexible, per-request parameter.
+8.3. Mitigating Tail Latency
+In a large-scale distributed system, occasional slow responses (tail latency) are inevitable due to factors like network jitter, garbage collection pauses, or temporary resource contention on a server.3 For a critical service like authorization, these outliers can have a disproportionate impact on overall application performance.
+To combat this, the service will employ request hedging for latency-sensitive Check operations.3 When a Check request is received, it is sent to the primary replica. If a response is not received within a very short, aggressive timeout (e.g., 5ms), the service will dispatch the exact same request to one or more secondary replicas. The service will then use the response from whichever replica replies first and discard the others. This technique dramatically reduces p99 latency by effectively mitigating the impact of random, transient slowdowns on any single server.
+Section 9: Conclusion and Next Steps
+This report has detailed a comprehensive architectural blueprint for a multi-tenant Policy Verification Service. The design synthesizes the strengths of two leading authorization paradigms to meet the complex requirements of a modern cloud platform.
+9.1. Summary of the Proposed Architecture
+The recommended architecture is a hybrid model that provides a single, unified authorization API. Internally, it is composed of:
+      * A Zanzibar-inspired Relationship Store for managing RBAC, hierarchies, and other structural relationships at scale with strong consistency.
+      * An OPA-inspired Policy Engine that acts as a stateless function for evaluating complex, attribute-based ABAC rules.
+      * A developer-first, TOML-based policy language that serves as a simple, high-level abstraction, compiling down to the optimized representations used by the underlying engines.
+      * A robust, type-safe implementation in Rust using Axum, with a clear separation of authentication and authorization, and built-in resilience through multi-layered caching, data replication, and advanced techniques like user-specified consistency and request hedging.
+This design directly addresses all core user requirements: it provides granular RBAC and flexible ABAC, is fundamentally multi-tenant, simplifies policy definition, and is specified for a high-performance Rust technology stack.
+9.2. Future Roadmap
+While the proposed architecture provides a complete foundation, several key features should be prioritized in a future roadmap to enhance its utility and operational maturity.
+      * Comprehensive Auditing: Implement a durable, immutable audit log that records every authorization decision (Check) and every change to policies or relationships (Write). This log is indispensable for security analysis, compliance requirements (e.g., SOC 2, FedRAMP), and debugging complex permission issues.
+      * Policy Testing and Validation ("Playground"): Develop a suite of tools, accessible via a CLI or a web UI, that allows developers to test and validate their policies before deployment. This would include the ability to run unit tests against policies using mock data and to simulate Check requests to understand why a particular decision was reached.11 This dramatically improves the developer feedback loop and reduces the risk of deploying faulty policies.
+      * "What-If" Analysis API: Extend the service's API to answer hypothetical authorization questions. This would allow administrators to simulate the impact of a potential policy change, answering questions like, "Which users would gain access to this resource if I assigned them the vm_admin role?"
+      * List Filtering and Data-Layer Enforcement: The most significant future enhancement is to move beyond simple "yes/no" checks and help services efficiently filter lists of resources. A Check-only API forces services to implement filtering inefficiently by fetching all items and checking each one individually (the "N+1 query problem"). A mature authorization service must solve this. The roadmap should include developing a capability to translate authorization policies into database query predicates (e.g., generating a SQL WHERE clause or an abstract filter expression). A service could then request this filter and apply it directly to its database query, ensuring that only authorized data is ever retrieved. This is a complex but transformative feature that makes building secure, performant UIs on top of the authorization service feasible at scale, truly fulfilling the promise of a centralized permissions layer.
+Works cited
+      1. What is Google Zanzibar? - Oso, accessed on October 30, 2025, https://www.osohq.com/learn/google-zanzibar
+      2. A Comprehensive Guide to Google Zanzibar: Concepts and Examples - Medium, accessed on October 30, 2025, https://medium.com/vlgunarathne/a-comprehensive-guide-to-google-zanzibar-concepts-and-examples-b47f5927d7fe
+      3. What is Google Zanzibar? — WorkOS Guides, accessed on October 30, 2025, https://workos.com/guide/google-zanzibar
+      4. Zanzibar: Google's Consistent, Global Authorization System - USENIX, accessed on October 30, 2025, https://www.usenix.org/conference/atc19/presentation/pang
+      5. An Introduction to Google Zanzibar and Relationship-Based Authorization Control - AuthZed, accessed on October 30, 2025, https://authzed.com/learn/google-zanzibar
+      6. Authorization Concepts - OpenFGA, accessed on October 30, 2025, https://openfga.dev/docs/authorization-concepts
+      7. Relationship-based access control - Wikipedia, accessed on October 30, 2025, https://en.wikipedia.org/wiki/Relationship-based_access_control
+      8. Google Zanzibar Authorization System - GeeksforGeeks, accessed on October 30, 2025, https://www.geeksforgeeks.org/system-design/google-zanzibar-authorization-system/
+      9. Zanzibar: Google's Consistent, Global Authorization System, accessed on October 30, 2025, https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/
+      10. Comparing OPA/Rego to AWS Cedar and Google Zanzibar - Styra, accessed on October 30, 2025, https://www.styra.com/blog/comparing-opa-rego-to-aws-cedar-and-google-zanzibar/
+      11. Introduction | Open Policy Agent, accessed on October 30, 2025, https://openpolicyagent.org/docs
+      12. What is Open Policy Agent (OPA)? Best Practices + Applications - Wiz, accessed on October 30, 2025, https://www.wiz.io/academy/open-policy-agent-opa
+      13. Open Policy Agent, accessed on October 30, 2025, https://openpolicyagent.org/
+      14. Policy Language, accessed on October 30, 2025, https://openpolicyagent.org/docs/policy-language
+      15. How to Write Your First Rules in Rego, the Policy Language for OPA - Styra, accessed on October 30, 2025, https://www.styra.com/blog/how-to-write-your-first-rules-in-rego-the-policy-language-for-opa/
+      16. Open Policy Agent (OPA) Rego Language Tutorial - Spacelift, accessed on October 30, 2025, https://spacelift.io/blog/open-policy-agent-rego
+      17. Role Based Access Control Vs Attribute Based Access Control Guide - StoneFly, Inc., accessed on October 30, 2025, https://stonefly.com/blog/rbac-vs-abac-enterprise-access-control/
+      18. RBAC vs ABAC: main differences and which one you should use - Oso, accessed on October 30, 2025, https://www.osohq.com/learn/rbac-vs-abac
+      19. Open Policy Agent Alternatives: OPA vs. Oso, accessed on October 30, 2025, https://www.osohq.com/post/oso-vs-opa-open-policy-agent-alternatives
+      20. Scaling Open Policy Agent (OPA) to offer a centrally managed Cloud Entitlements Service, accessed on October 30, 2025, https://developer.gs.com/blog/posts/scaling-opa-for-oces
+      21. Introduction to OPAL, accessed on October 30, 2025, https://docs.opal.ac/getting-started/intro/
+      22. Implementing Google Zanzibar's Basics : r/golang - Reddit, accessed on October 30, 2025, https://www.reddit.com/r/golang/comments/192h00c/implementing_google_zanzibars_basics/
+      23. OPA multi-tenant design considerations - AWS Prescriptive Guidance, accessed on October 30, 2025, https://docs.aws.amazon.com/prescriptive-guidance/latest/saas-multitenant-api-access-authorization/opa-design-considerations.html
+      24. Example 2: Multi-tenant access control and user-defined RBAC with OPA and Rego, accessed on October 30, 2025, https://docs.aws.amazon.com/prescriptive-guidance/latest/saas-multitenant-api-access-authorization/opa-rbac-examples.html
+      25. ABAC meets Zanzibar with SpiceDB Caveats - ABAC example - AuthZed, accessed on October 30, 2025, https://authzed.com/blog/abac-example
+      26. Building Scalable Multi-Tenancy Authentication and Authorization using Open Standards and Open-Source Software | by Martin Besozzi, accessed on October 30, 2025, https://embesozzi.medium.com/building-scalable-multi-tenancy-authentication-and-authorization-using-open-standards-and-7341fcd87b64
+      27. Cerbos vs. OPA, accessed on October 30, 2025, https://www.cerbos.dev/blog/cerbos-vs-opa
+      28. What is OPA (Open Policy Agent)? - Oso, accessed on October 30, 2025, https://www.osohq.com/learn/what-is-opa-open-policy-agent-opa
+      29. Oso Authorization Glossary: Polar (Policy Language), accessed on October 30, 2025, https://www.osohq.com/authorization-glossary/polar-policy-language
+      30. The Polar Language - Oso Library Documentation, accessed on October 30, 2025, https://www.osohq.com/docs/oss/learn/polar-foundations.html
+      31. The Polar Language in Oso Cloud, accessed on October 30, 2025, https://www.osohq.com/docs/modeling-in-polar/reference
+      32. JSON vs XML vs TOML vs CSON vs YAML - Zion & Zion, accessed on October 30, 2025, https://www.zionandzion.com/json-vs-xml-vs-toml-vs-cson-vs-yaml/
+      33. Yaml, JSON, Toml - Chris Coyier, accessed on October 30, 2025, https://chriscoyier.net/2023/01/27/yaml-json-toml/
+      34. JSON vs YAML vs TOML vs XML: Best Data Format in 2025 - DEV Community, accessed on October 30, 2025, https://dev.to/leapcell/json-vs-yaml-vs-toml-vs-xml-best-data-format-in-2025-5444
+      35. An In-depth Comparison of JSON, YAML, and TOML | AnBowell, accessed on October 30, 2025, https://www.anbowell.com/blog/an-in-depth-comparison-of-json-yaml-and-toml/
+      36. The Comprehensive Guide to YAML, JSON, TOML, HCL (HashiCorp ), XML & differences | by Sam Atmaramani | Medium, accessed on October 30, 2025, https://medium.com/@s.atmaramani/the-comprehensive-guide-to-yaml-json-toml-hcl-hashicorp-xml-differences-237ec82092ca
+      37. Open Policy Agent (OPA) - GitHub, accessed on October 30, 2025, https://github.com/open-policy-agent/opa
+      38. osohq/oso: Deprecated: See README - GitHub, accessed on October 30, 2025, https://github.com/osohq/oso
+      39. Building High-Performance REST APIs with Actix-Web or Axum in Rust - Medium, accessed on October 30, 2025, https://medium.com/towardsdev/building-high-performance-rest-apis-with-actix-web-or-axum-in-rust-34c25ea8a263
+      40. Rust Web Frameworks Compared: Actix vs Axum vs Rocket - DEV Community, accessed on October 30, 2025, https://dev.to/leapcell/rust-web-frameworks-compared-actix-vs-axum-vs-rocket-4bad
+      41. Actix or Axum for my startup backend ? : r/rust - Reddit, accessed on October 30, 2025, https://www.reddit.com/r/rust/comments/1hy0fza/actix_or_axum_for_my_startup_backend/
+      42. Axum vs Actix : r/rust - Reddit, accessed on October 30, 2025, https://www.reddit.com/r/rust/comments/1b216bf/axum_vs_actix/
+      43. Casbin · An authorization library that supports access control models like ACL, RBAC, ABAC, ReBAC, BLP, Biba, LBAC, UCON, Priority, RESTful for Golang, Java, C/C++, Node.js, Javascript, PHP, Laravel, Python, .NET (C#), Delphi, Rust, Ruby, accessed on October 30, 2025, https://casbin.org/
+      44. casbin/casbin-rs: An authorization library that supports access control models like ACL, RBAC, ABAC in Rust. - GitHub, accessed on October 30, 2025, https://github.com/casbin/casbin-rs
+      45. casbin - crates.io: Rust Package Registry, accessed on October 30, 2025, https://crates.io/crates/casbin
+      46. oso - crates.io: Rust Package Registry, accessed on October 30, 2025, https://crates.io/crates/oso/0.13.1/dependencies
+      47. oso - crates.io: Rust Package Registry, accessed on October 30, 2025, https://crates.io/crates/oso
+      48. API Caching Strategies, Challenges, and Examples - DreamFactory Blog, accessed on October 30, 2025, https://blog.dreamfactory.com/api-caching-strategies-challenges-and-examples
+      49. RESTful API Design Guide: Principles & Best Practices - Strapi, accessed on October 30, 2025, https://strapi.io/blog/restful-api-design-guide-principles-best-practices
+      50. REST API Tutorial: What is REST?, accessed on October 30, 2025, https://restfulapi.net/
+      51. Web API Design Best Practices - Azure Architecture Center | Microsoft Learn, accessed on October 30, 2025, https://learn.microsoft.com/en-us/azure/architecture/best-practices/api-design
+      52. Keats/jsonwebtoken: JWT lib in rust - GitHub, accessed on October 30, 2025, https://github.com/Keats/jsonwebtoken
+      53. jwt-simple - crates.io: Rust Package Registry, accessed on October 30, 2025, https://crates.io/crates/jwt-simple
+      54. Validate JWT using HS384 in Rust - SSOJet, accessed on October 30, 2025, https://ssojet.com/jwt-validation/validate-jwt-using-hs384-in-rust
+      55. Implementing JWT Authentication in Rust - Shuttle.dev, accessed on October 30, 2025, https://www.shuttle.dev/blog/2024/02/21/using-jwt-auth-rust
+      56. axum-jwt-auth - crates.io: Rust Package Registry, accessed on October 30, 2025, https://crates.io/crates/axum-jwt-auth
+      57. axum_jwt_auth - Rust - Docs.rs, accessed on October 30, 2025, https://docs.rs/axum-jwt-auth/
+      58. wpcodevo/rust-axum-jwt-auth - GitHub, accessed on October 30, 2025, https://github.com/wpcodevo/rust-axum-jwt-auth
+      59. Caching guidance - Azure Architecture Center | Microsoft Learn, accessed on October 30, 2025, https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching

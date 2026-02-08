@@ -42,7 +42,15 @@
       "Bash(rustc:*)",
       "Bash(docker build:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nfix(docker): Add missing client-wasm directory and update Rust version\n\n- Add COPY client-wasm to Dockerfile to include workspace member\n- Update Rust base image from 1.91 to 1.92\n- Fixes CI build failure: \"failed to load manifest for workspace member client-wasm\"\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
-      "WebFetch(domain:datatracker.ietf.org)"
+      "WebFetch(domain:datatracker.ietf.org)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:kdl.dev)",
+      "Bash(git -C /home/toasty/ws/nebula/barycenter status)",
+      "Bash(git -C /home/toasty/ws/nebula/barycenter diff --stat)",
+      "Bash(git -C /home/toasty/ws/nebula/barycenter log --oneline -5)",
+      "Bash(git -C /home/toasty/ws/nebula/barycenter add Cargo.toml Cargo.lock src/lib.rs src/settings.rs src/web.rs src/authz/)",
+      "Bash(git -C /home/toasty/ws/nebula/barycenter commit -m \"$\\(cat <<''EOF''\nImplement file-driven authorization policy service \\(ReBAC + ABAC\\)\n\nAdd a Zanzibar-style relationship-based access control engine with\nOPA-style ABAC condition evaluation. Policies, roles, resources, and\ngrants are defined in KDL files loaded from a configured directory at\nstartup. Exposes a read-only REST API \\(POST /v1/check, /v1/expand,\nGET /healthz\\) on a dedicated port when authz.enabled = true.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ],
     "deny": [],
     "ask": []
