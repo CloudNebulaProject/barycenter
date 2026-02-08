@@ -135,23 +135,17 @@ pub fn parse_kdl_document(source: &str) -> Result<ParsedPolicy, AuthzError> {
                     )
                 })?;
 
-                let on = node
-                    .get("on")
-                    .and_then(|v| v.as_string())
-                    .ok_or_else(|| {
-                        AuthzError::InvalidGrant(format!(
-                            "grant `{relation}` missing `on` property (e.g. on=\"vm/vm-123\")"
-                        ))
-                    })?;
+                let on = node.get("on").and_then(|v| v.as_string()).ok_or_else(|| {
+                    AuthzError::InvalidGrant(format!(
+                        "grant `{relation}` missing `on` property (e.g. on=\"vm/vm-123\")"
+                    ))
+                })?;
 
-                let to = node
-                    .get("to")
-                    .and_then(|v| v.as_string())
-                    .ok_or_else(|| {
-                        AuthzError::InvalidGrant(format!(
-                            "grant `{relation}` missing `to` property (e.g. to=\"user/alice\")"
-                        ))
-                    })?;
+                let to = node.get("to").and_then(|v| v.as_string()).ok_or_else(|| {
+                    AuthzError::InvalidGrant(format!(
+                        "grant `{relation}` missing `to` property (e.g. to=\"user/alice\")"
+                    ))
+                })?;
 
                 let obj = ObjectRef::parse(on).ok_or_else(|| {
                     AuthzError::InvalidGrant(format!(

@@ -21,7 +21,9 @@ pub enum AuthzError {
     #[error("Invalid policy: {0}")]
     #[diagnostic(
         code(barycenter::authz::invalid_policy),
-        help("Each policy file must contain valid `resource`, `role`, `rule`, or `grant` KDL nodes")
+        help(
+            "Each policy file must contain valid `resource`, `role`, `rule`, or `grant` KDL nodes"
+        )
     )]
     InvalidPolicy(String),
 

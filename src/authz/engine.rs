@@ -92,7 +92,10 @@ fn check_abac_rules(
 
         // Check if the principal matches any of the rule's principal patterns
         let principal_match = rule.principals.is_empty()
-            || rule.principals.iter().any(|p| matches_principal(principal, p, state));
+            || rule
+                .principals
+                .iter()
+                .any(|p| matches_principal(principal, p, state));
 
         if !principal_match {
             continue;
@@ -323,9 +326,14 @@ mod tests {
     fn test_check_inherited_permission() {
         let state = make_vm_state();
         // alice has vm_admin which includes vm_viewer -> vm:view_console
-        assert!(
-            check(&state, "user/alice", "vm:view_console", "vm/vm-123", &json!({})).unwrap()
-        );
+        assert!(check(
+            &state,
+            "user/alice",
+            "vm:view_console",
+            "vm/vm-123",
+            &json!({})
+        )
+        .unwrap());
     }
 
     #[test]
@@ -341,9 +349,14 @@ mod tests {
     fn test_check_userset_membership() {
         let state = make_vm_state();
         // bob is member of group/engineers, which has vm_viewer on vm/vm-456
-        assert!(
-            check(&state, "user/bob", "vm:view_console", "vm/vm-456", &json!({})).unwrap()
-        );
+        assert!(check(
+            &state,
+            "user/bob",
+            "vm:view_console",
+            "vm/vm-456",
+            &json!({})
+        )
+        .unwrap());
         // but bob can't start vm-456 (only viewer)
         assert!(!check(&state, "user/bob", "vm:start", "vm/vm-456", &json!({})).unwrap());
     }
@@ -351,9 +364,7 @@ mod tests {
     #[test]
     fn test_check_unknown_permission() {
         let state = make_vm_state();
-        assert!(
-            !check(&state, "user/alice", "vm:delete", "vm/vm-123", &json!({})).unwrap()
-        );
+        assert!(!check(&state, "user/alice", "vm:delete", "vm/vm-123", &json!({})).unwrap());
     }
 
     #[test]
@@ -384,20 +395,16 @@ mod tests {
                 effect: "allow".into(),
                 permissions: vec!["invoice:view".into()],
                 principals: vec!["group:finance".into()],
-                condition: Some(
-                    "request.time.hour >= 9 && request.time.hour < 17".into(),
-                ),
+                condition: Some("request.time.hour >= 9 && request.time.hour < 17".into()),
             }],
-            grants: vec![
-                GrantTuple {
-                    relation: "member".into(),
-                    object_type: "group".into(),
-                    object_id: "finance".into(),
-                    subject_type: "user".into(),
-                    subject_id: "carol".into(),
-                    subject_relation: None,
-                },
-            ],
+            grants: vec![GrantTuple {
+                relation: "member".into(),
+                object_type: "group".into(),
+                object_id: "finance".into(),
+                subject_type: "user".into(),
+                subject_id: "carol".into(),
+                subject_relation: None,
+            }],
         };
         let state = compile_policies(vec![parsed]).unwrap();
 
@@ -407,15 +414,25 @@ mod tests {
 
         // Carol is in finance, outside business hours -> denied
         let ctx_late = json!({ "request": { "time": { "hour": 22 } } });
-        assert!(
-            !check(&state, "user/carol", "invoice:view", "invoice/inv-1", &ctx_late).unwrap()
-        );
+        assert!(!check(
+            &state,
+            "user/carol",
+            "invoice:view",
+            "invoice/inv-1",
+            &ctx_late
+        )
+        .unwrap());
 
         // Dave is NOT in finance -> denied even during business hours
         let ctx_hours = json!({ "request": { "time": { "hour": 14 } } });
-        assert!(
-            !check(&state, "user/dave", "invoice:view", "invoice/inv-1", &ctx_hours).unwrap()
-        );
+        assert!(!check(
+            &state,
+            "user/dave",
+            "invoice:view",
+            "invoice/inv-1",
+            &ctx_hours
+        )
+        .unwrap());
     }
 
     #[test]

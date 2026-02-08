@@ -67,16 +67,16 @@ enum Token {
     Dot,
     LParen,
     RParen,
-    Eq,   // ==
-    Ne,   // !=
-    Gt,   // >
-    Lt,   // <
-    Ge,   // >=
-    Le,   // <=
-    And,  // &&
-    Or,   // ||
-    Not,  // !
-    In,   // in
+    Eq,  // ==
+    Ne,  // !=
+    Gt,  // >
+    Lt,  // <
+    Ge,  // >=
+    Le,  // <=
+    And, // &&
+    Or,  // ||
+    Not, // !
+    In,  // in
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>, AuthzError> {
@@ -476,7 +476,10 @@ fn eval_value(expr: &Expr, context: &Value) -> Result<EvalResult, AuthzError> {
                 )),
             }
         }
-        Expr::In { element, collection } => {
+        Expr::In {
+            element,
+            collection,
+        } => {
             let elem = eval_value(element, context)?;
             let coll = eval_value(collection, context)?;
             match coll {
@@ -491,17 +494,13 @@ fn eval_value(expr: &Expr, context: &Value) -> Result<EvalResult, AuthzError> {
             let r = eval_value(right, context)?;
             match op {
                 BinOp::And => match (&l, &r) {
-                    (EvalResult::Bool(a), EvalResult::Bool(b)) => {
-                        Ok(EvalResult::Bool(*a && *b))
-                    }
+                    (EvalResult::Bool(a), EvalResult::Bool(b)) => Ok(EvalResult::Bool(*a && *b)),
                     _ => Err(AuthzError::InvalidCondition(
                         "`&&` requires boolean operands".into(),
                     )),
                 },
                 BinOp::Or => match (&l, &r) {
-                    (EvalResult::Bool(a), EvalResult::Bool(b)) => {
-                        Ok(EvalResult::Bool(*a || *b))
-                    }
+                    (EvalResult::Bool(a), EvalResult::Bool(b)) => Ok(EvalResult::Bool(*a || *b)),
                     _ => Err(AuthzError::InvalidCondition(
                         "`||` requires boolean operands".into(),
                     )),
@@ -591,9 +590,7 @@ mod tests {
     fn test_parse_boolean_and() {
         let expr = parse_condition("a > 1 && b < 2").unwrap();
         match expr {
-            Expr::BinOp {
-                op: BinOp::And, ..
-            } => {}
+            Expr::BinOp { op: BinOp::And, .. } => {}
             _ => panic!("expected And"),
         }
     }
@@ -657,8 +654,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_boolean_and() {
-        let expr =
-            parse_condition("request.time.hour >= 9 && request.time.hour < 17").unwrap();
+        let expr = parse_condition("request.time.hour >= 9 && request.time.hour < 17").unwrap();
         let ctx = json!({ "request": { "time": { "hour": 14 } } });
         assert!(evaluate(&expr, &ctx).unwrap());
 

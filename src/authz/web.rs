@@ -22,7 +22,13 @@ async fn handle_check(
     State(state): State<Arc<AuthzState>>,
     Json(req): Json<CheckRequest>,
 ) -> impl IntoResponse {
-    match engine::check(&state, &req.principal, &req.permission, &req.resource, &req.context) {
+    match engine::check(
+        &state,
+        &req.principal,
+        &req.permission,
+        &req.resource,
+        &req.context,
+    ) {
         Ok(allowed) => Json(CheckResponse { allowed }).into_response(),
         Err(e) => e.into_response(),
     }

@@ -32,12 +32,11 @@ pub fn load_policies(dir: &Path) -> Result<AuthzState, AuthzError> {
 
     for entry in entries {
         let path = entry.path();
-        let contents = std::fs::read_to_string(&path).map_err(|source| {
-            AuthzError::PolicyLoadError {
+        let contents =
+            std::fs::read_to_string(&path).map_err(|source| AuthzError::PolicyLoadError {
                 path: path.display().to_string(),
                 source,
-            }
-        })?;
+            })?;
         let parsed = parse_kdl_document(&contents)?;
         all_parsed.push(parsed);
         file_count += 1;
@@ -214,16 +213,14 @@ mod tests {
                 },
             ],
             rules: vec![],
-            grants: vec![
-                GrantTuple {
-                    relation: "vm_admin".into(),
-                    object_type: "vm".into(),
-                    object_id: "vm-123".into(),
-                    subject_type: "user".into(),
-                    subject_id: "alice".into(),
-                    subject_relation: None,
-                },
-            ],
+            grants: vec![GrantTuple {
+                relation: "vm_admin".into(),
+                object_type: "vm".into(),
+                object_id: "vm-123".into(),
+                subject_type: "user".into(),
+                subject_id: "alice".into(),
+                subject_relation: None,
+            }],
         }
     }
 
