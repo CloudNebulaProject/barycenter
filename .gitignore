@@ -24,6 +24,9 @@
 *.db-shm
 *.db-wal
 
+# mdbook build output
+/book/build/
+
 # Environment and config (optional - uncomment if you want to ignore local configs)
 # config.toml
 # .env
