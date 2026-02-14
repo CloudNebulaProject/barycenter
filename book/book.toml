@@ -13,6 +13,7 @@ create-missing = false
 default-theme = "light"
 preferred-dark-theme = "navy"
 smart-punctuation = true
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 git-repository-url = "https://github.com/CloudNebulaProject/barycenter"
 edit-url-template = "https://github.com/CloudNebulaProject/barycenter/edit/main/book/{path}"
 site-url = "/"
