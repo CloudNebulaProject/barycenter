@@ -3,7 +3,7 @@ members = [".", "migration", "client-wasm"]
 
 [package]
 name = "barycenter"
-version = "0.2.0-alpha.18"
+version = "0.2.0-beta.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "OpenID Connect IdP with federation, property storage, and auto-registration the center of gravity between multiple objects."
