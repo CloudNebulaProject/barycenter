@@ -103,7 +103,7 @@ pub struct DeviceCode {
     pub created_at: i64,
     pub expires_at: i64,
     pub last_poll_at: Option<i64>,
-    pub interval: i64,
+    pub interval: i32,
     pub status: String, // "pending" | "approved" | "denied" | "consumed"
     pub subject: Option<String>,
     pub auth_time: Option<i64>,

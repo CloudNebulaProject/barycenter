@@ -1695,7 +1695,7 @@ async fn handle_device_code_grant(
         let now = chrono::Utc::now().timestamp();
         let elapsed = now - last_poll;
 
-        if elapsed < device_code.interval {
+        if elapsed < device_code.interval as i64 {
             // Polling too fast - increment interval and return slow_down
             let _ = storage::increment_device_code_interval(&state.db, &device_code_str).await;
 
