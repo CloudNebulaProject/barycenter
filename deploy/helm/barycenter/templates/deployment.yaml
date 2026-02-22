@@ -47,11 +47,9 @@ spec:
           - sync-users
           - --file
           - /secrets/{{ .Values.userSync.secretKey }}
+        {{- if .Values.env }}
         env:
-        - name: RUST_LOG
-          value: "info"
-        {{- if .Values.userSync.env }}
-        {{- toYaml .Values.userSync.env | nindent 8 }}
+          {{- toYaml .Values.env | nindent 8 }}
         {{- end }}
         volumeMounts:
         - name: config
