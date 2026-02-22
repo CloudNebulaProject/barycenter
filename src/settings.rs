@@ -145,8 +145,11 @@ impl Settings {
         }
 
         // Environment overrides: BARYCENTER__SERVER__PORT=9090, etc.
-        builder =
-            builder.add_source(config::Environment::with_prefix("BARYCENTER").separator("__"));
+        builder = builder.add_source(
+            config::Environment::with_prefix("BARYCENTER")
+                .prefix_separator("__")
+                .separator("__"),
+        );
 
         let cfg = builder.build().into_diagnostic()?;
         let mut s: Settings = cfg.try_deserialize().into_diagnostic()?;

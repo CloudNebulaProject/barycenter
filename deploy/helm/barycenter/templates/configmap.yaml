@@ -13,8 +13,10 @@ data:
     public_base_url = {{ .Values.config.server.publicBaseUrl | quote }}
     {{- end }}
 
+    {{- if .Values.config.database.url }}
     [database]
     url = {{ .Values.config.database.url | quote }}
+    {{- end }}
 
     [keys]
     jwks_path = {{ .Values.config.keys.jwksPath | quote }}
