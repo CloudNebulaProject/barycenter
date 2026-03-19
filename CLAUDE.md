@@ -267,11 +267,9 @@ See `docs/oidc-conformance.md` for detailed OIDC compliance requirements.
 - Session-based AMR/ACR tracking
 
 **Pending:**
-- Cache-Control headers on token endpoint
-- Consent flow (currently auto-consents)
-- Token revocation and introspection endpoints
 - OpenID Federation trust chain validation
 - User account management UI
+- Key rotation and multi-key JWKS
 
 ## Admin GraphQL API
 

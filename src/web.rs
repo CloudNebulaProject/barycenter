@@ -122,6 +122,7 @@ pub async fn serve(
         .route("/consent", get(consent_page).post(consent_submit))
         .route("/token", post(token))
         .route("/revoke", post(token_revoke))
+        .route("/introspect", post(token_introspect))
         .route("/userinfo", get(userinfo))
         // Device Authorization Grant (RFC 8628) endpoints
         .route("/device_authorization", post(device_authorization))
@@ -241,6 +242,8 @@ async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": [state.settings.keys.alg],
         // Additional recommended metadata for better interoperability
+        "revocation_endpoint": format!("{}/revoke", issuer),
+        "introspection_endpoint": format!("{}/introspect", issuer),
         "grant_types_supported": ["authorization_code", "refresh_token", "implicit", "urn:ietf:params:oauth:grant-type:device_code"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
         "code_challenge_methods_supported": ["S256"],
@@ -1906,6 +1909,177 @@ fn authenticate_client(
             )),
         }
     }
+}
+
+/// POST /introspect - Token introspection endpoint (RFC 7662)
+#[derive(Debug, Deserialize)]
+struct TokenIntrospectRequest {
+    token: String,
+    token_type_hint: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
+async fn token_introspect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(req): Form<TokenIntrospectRequest>,
+) -> Response {
+    // Client authentication: try Basic auth first, then form body
+    let mut basic_client: Option<(String, String)> = None;
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
+        if let Some(b64) = auth_val.strip_prefix("Basic ") {
+            if let Ok(mut decoded) = Base64::decode_vec(b64) {
+                if let Ok(s) = String::from_utf8(std::mem::take(&mut decoded)) {
+                    if let Some((id, sec)) = s.split_once(':') {
+                        basic_client = Some((id.to_string(), sec.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    let (client_id, client_secret) = if let Some(pair) = basic_client {
+        pair
+    } else {
+        match (req.client_id.clone(), req.client_secret.clone()) {
+            (Some(id), Some(sec)) => (id, sec),
+            _ => {
+                return json_with_headers(
+                    StatusCode::UNAUTHORIZED,
+                    json!({"error":"invalid_client"}),
+                    &[(
+                        "www-authenticate",
+                        "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                    )],
+                )
+            }
+        }
+    };
+
+    // Verify client exists and credentials match
+    let client = match storage::get_client(&state.db, &client_id).await {
+        Ok(Some(c)) => c,
+        _ => {
+            return json_with_headers(
+                StatusCode::UNAUTHORIZED,
+                json!({"error":"invalid_client"}),
+                &[(
+                    "www-authenticate",
+                    "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+                )],
+            )
+        }
+    };
+
+    if client.client_secret != client_secret {
+        return json_with_headers(
+            StatusCode::UNAUTHORIZED,
+            json!({"error":"invalid_client"}),
+            &[(
+                "www-authenticate",
+                "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
+            )],
+        );
+    }
+
+    let inactive_response = || {
+        json_with_headers(
+            StatusCode::OK,
+            json!({"active": false}),
+            &[
+                ("cache-control", "no-store".to_string()),
+                ("pragma", "no-cache".to_string()),
+            ],
+        )
+    };
+
+    // Look up as access token first (or follow hint)
+    let hint = req.token_type_hint.as_deref();
+
+    if hint != Some("refresh_token") {
+        if let Ok(Some(at)) = storage::get_access_token_raw(&state.db, &req.token).await {
+            let now = chrono::Utc::now().timestamp();
+            let active = at.revoked == 0 && now <= at.expires_at && at.client_id == client_id;
+            if active {
+                return json_with_headers(
+                    StatusCode::OK,
+                    json!({
+                        "active": true,
+                        "scope": at.scope,
+                        "client_id": at.client_id,
+                        "sub": at.subject,
+                        "exp": at.expires_at,
+                        "iat": at.created_at,
+                        "token_type": "bearer"
+                    }),
+                    &[
+                        ("cache-control", "no-store".to_string()),
+                        ("pragma", "no-cache".to_string()),
+                    ],
+                );
+            }
+            return inactive_response();
+        }
+    }
+
+    // Look up as refresh token
+    if let Ok(Some(rt)) = storage::get_refresh_token_raw(&state.db, &req.token).await {
+        let now = chrono::Utc::now().timestamp();
+        let active = rt.revoked == 0 && now <= rt.expires_at && rt.client_id == client_id;
+        if active {
+            return json_with_headers(
+                StatusCode::OK,
+                json!({
+                    "active": true,
+                    "scope": rt.scope,
+                    "client_id": rt.client_id,
+                    "sub": rt.subject,
+                    "exp": rt.expires_at,
+                    "iat": rt.created_at,
+                    "token_type": "refresh_token"
+                }),
+                &[
+                    ("cache-control", "no-store".to_string()),
+                    ("pragma", "no-cache".to_string()),
+                ],
+            );
+        }
+        return inactive_response();
+    }
+
+    // If hint was refresh_token but not found there, try access token
+    if hint == Some("refresh_token") {
+        if let Ok(Some(at)) = storage::get_access_token_raw(&state.db, &req.token).await {
+            let now = chrono::Utc::now().timestamp();
+            let active = at.revoked == 0 && now <= at.expires_at && at.client_id == client_id;
+            if active {
+                return json_with_headers(
+                    StatusCode::OK,
+                    json!({
+                        "active": true,
+                        "scope": at.scope,
+                        "client_id": at.client_id,
+                        "sub": at.subject,
+                        "exp": at.expires_at,
+                        "iat": at.created_at,
+                        "token_type": "bearer"
+                    }),
+                    &[
+                        ("cache-control", "no-store".to_string()),
+                        ("pragma", "no-cache".to_string()),
+                    ],
+                );
+            }
+            return inactive_response();
+        }
+    }
+
+    // Token not found at all — return inactive per RFC 7662 section 2.2
+    inactive_response()
 }
 
 async fn userinfo(
