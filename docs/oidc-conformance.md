@@ -20,7 +20,7 @@ Scope references (context7 up-to-date pointers):
 - Token endpoint: POST /token (application/x-www-form-urlencoded)
   - Grant type: authorization_code
   - Parameters: grant_type, code, redirect_uri, client authentication
-    - Client auth: client_secret_post (initial support); consider client_secret_basic later
+    - Client auth: client_secret_post and client_secret_basic (both supported)
   - PKCE verification: code_verifier must match stored code_challenge (S256)
   - Output: JSON with access_token, token_type=bearer, expires_in, id_token (JWT), possibly refresh_token
   - Error model: RFC 6749 + OIDC specific where applicable
@@ -79,7 +79,7 @@ Scope references (context7 up-to-date pointers):
 - grant_types_supported: ["authorization_code"]
 - subject_types_supported: ["public"]
 - id_token_signing_alg_values_supported: ["RS256"]
-- token_endpoint_auth_methods_supported: ["client_secret_post"]
+- token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"]
 - code_challenge_methods_supported: ["S256"]
 - scopes_supported: ["openid", "profile", "email"]
 - claims_supported: ["sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "name", "given_name", "family_name", "email", "email_verified"]
@@ -88,45 +88,48 @@ Scope references (context7 up-to-date pointers):
 
 6) Current status in this repository
 - Implemented:
-  - Discovery endpoint (basic subset)
+  - Authorization Code flow with PKCE (S256 enforced)
+  - Token endpoint with client_secret_post and client_secret_basic authentication
+  - ID Token signing (RS256) with at_hash, nonce, auth_time, AMR, and ACR claims
+  - UserInfo endpoint with Bearer token authentication
+  - Discovery endpoint with full metadata
   - JWKS publication with key generation and persistence
-  - Dynamic client auto-registration (basic)
+  - Dynamic client registration
+  - Refresh token grant with rotation
+  - Token revocation (RFC 7009)
+  - Token introspection (RFC 7662)
+  - Device Authorization Grant (RFC 8628)
+  - User authentication with sessions (password + passkey/WebAuthn)
+  - Two-factor authentication (admin-enforced, context-based)
+  - Consent flow with database persistence
+  - Background jobs for cleanup (sessions, tokens, challenges)
+  - Admin GraphQL API for user management
   - Simple property storage API (non-standard)
   - Federation trust anchors stub
 
-- Missing for OIDC Core compliance:
-  - /authorize (Authorization Code + PKCE)
-  - /token (code exchange, ID Token signing)
-  - /userinfo
-  - Storage for auth codes and tokens
-  - Full error models and input validation across endpoints
-  - Robust client registration validation + optional configuration endpoint
+- Remaining for full OIDC compliance:
+  - OpenID Federation trust chain validation
+  - User account management UI
+  - Key rotation and multi-key JWKS
 
 
-7) Minimal viable roadmap (incremental)
-Step 1: Data model and discovery metadata
-- Add DB tables for auth_codes and access_tokens
-- Extend discovery to include grant_types_supported, token_endpoint_auth_methods_supported, code_challenge_methods_supported, claims_supported
+7) Roadmap (remaining work)
 
-Step 2: Authorization Code + PKCE
-- Implement /authorize to issue short-lived codes; validate redirect_uri, scope, client, state, nonce, PKCE
+Steps 1-5 of the original roadmap are complete. Remaining items:
 
-Step 3: Token endpoint and ID Token
-- Implement /token; client_secret_post, PKCE verification; sign ID Token with RS256 using current JWK; include required claims
-
-Step 4: UserInfo
-- Implement /userinfo backed by properties or a user table; authorize via access token
-
-Step 5: Hardening and cleanup
-- Proper errors per specs; input validation; token lifetimes; background pruning of consumed/expired artifacts
-- Optional: client_secret_basic, refresh tokens, rotation, revocation, introspection
-
-Step 6: Federation (later)
+Step 6: Federation
 - Entity statement issuance, publication, and trust chain verification; policy application to registration
+
+Step 7: Account management UI
+- User-facing pages for profile, passkey management, and session management
+
+Step 8: Advanced key management
+- Key rotation, multi-key JWKS, algorithm agility
 
 
 Implementation notes
 - Keep issuer stable and correct in settings.server.public_base_url for production
 - Ensure JWKS kid selection and alg entry match discovery
 - Prefer S256 for PKCE; do not support plain
-- Add tests or curl scripts to verify end-to-end flows
+- See docs/flows.md for end-to-end curl examples
+- See scripts/validate-oidc.sh for automated validation

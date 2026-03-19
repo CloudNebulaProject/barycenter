@@ -365,6 +365,61 @@ pub async fn get_access_token(
     }
 }
 
+/// Like get_access_token but returns the token even if expired or revoked.
+/// Used by the introspection endpoint to distinguish "inactive" from "not found".
+pub async fn get_access_token_raw(
+    db: &DatabaseConnection,
+    token: &str,
+) -> Result<Option<AccessToken>, CrabError> {
+    use entities::access_token::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::Token.eq(token))
+        .one(db)
+        .await?
+    {
+        Ok(Some(AccessToken {
+            token: model.token,
+            client_id: model.client_id,
+            subject: model.subject,
+            scope: model.scope,
+            created_at: model.created_at,
+            expires_at: model.expires_at,
+            revoked: model.revoked,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Like get_refresh_token but returns the token even if expired or revoked.
+/// Used by the introspection endpoint to distinguish "inactive" from "not found".
+pub async fn get_refresh_token_raw(
+    db: &DatabaseConnection,
+    token: &str,
+) -> Result<Option<RefreshToken>, CrabError> {
+    use entities::refresh_token::{Column, Entity};
+
+    if let Some(model) = Entity::find()
+        .filter(Column::Token.eq(token))
+        .one(db)
+        .await?
+    {
+        Ok(Some(RefreshToken {
+            token: model.token,
+            client_id: model.client_id,
+            subject: model.subject,
+            scope: model.scope,
+            created_at: model.created_at,
+            expires_at: model.expires_at,
+            revoked: model.revoked,
+            parent_token: model.parent_token,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 fn random_id() -> String {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);

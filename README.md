@@ -139,16 +139,21 @@ This is an early-stage implementation. See `docs/next-iteration-plan.md` for pla
 **Currently Implemented:**
 - Authorization Code flow with PKCE (S256)
 - Dynamic client registration
-- Token issuance and validation
-- ID Token generation with RS256 signing
+- Token issuance with RS256 ID Token signing (at_hash, nonce, auth_time, AMR, ACR)
 - UserInfo endpoint
+- Token endpoint with client_secret_basic and client_secret_post
+- User authentication with sessions (password + passkey/WebAuthn)
+- Two-factor authentication (admin-enforced, context-based)
+- Consent flow with database persistence
+- Refresh token grant with rotation
+- Token revocation (RFC 7009) and introspection (RFC 7662)
+- Device Authorization Grant (RFC 8628)
+- Admin GraphQL API
 
 **Pending Implementation:**
-- User authentication and session management
-- Consent flow
-- Refresh tokens
-- Token revocation and introspection
-- OpenID Federation support
+- OpenID Federation trust chain validation
+- User account management UI
+- Key rotation and multi-key JWKS
 
 ## Deployment
 
