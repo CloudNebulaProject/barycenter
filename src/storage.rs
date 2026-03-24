@@ -161,6 +161,26 @@ pub async fn get_property(
     }
 }
 
+pub async fn get_properties_for_owner(
+    db: &DatabaseConnection,
+    owner: &str,
+) -> Result<std::collections::HashMap<String, Value>, CrabError> {
+    use entities::property::{Column, Entity};
+
+    let models = Entity::find()
+        .filter(Column::Owner.eq(owner))
+        .all(db)
+        .await?;
+
+    let mut map = std::collections::HashMap::new();
+    for model in models {
+        if let Ok(json) = serde_json::from_str(&model.value) {
+            map.insert(model.key, json);
+        }
+    }
+    Ok(map)
+}
+
 pub async fn set_property(
     db: &DatabaseConnection,
     owner: &str,

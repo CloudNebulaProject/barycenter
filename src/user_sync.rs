@@ -50,7 +50,7 @@ pub async fn sync_users_from_file(db: &DatabaseConnection, file_path: &str) -> R
         .into_diagnostic()
         .map_err(|e| {
             miette::miette!(
-                "Failed to parse users JSON file: {}\n\nExpected format:\n{{\n  \"users\": [\n    {{\n      \"username\": \"alice\",\n      \"email\": \"alice@example.com\",\n      \"password\": \"secure-password\",\n      \"enabled\": true,\n      \"email_verified\": false,\n      \"properties\": {{\n        \"department\": \"Engineering\"\n      }}\n    }}\n  ]\n}}",
+                "Failed to parse users JSON file: {}\n\nExpected format:\n{{\n  \"users\": [\n    {{\n      \"username\": \"alice\",\n      \"email\": \"alice@example.com\",\n      \"password\": \"secure-password\",\n      \"enabled\": true,\n      \"email_verified\": false,\n      \"properties\": {{\n        \"name\": \"Alice Johnson\",\n        \"given_name\": \"Alice\",\n        \"family_name\": \"Johnson\",\n        \"picture\": \"https://example.com/alice.jpg\"\n      }}\n    }}\n  ]\n}}\n\nStandard OIDC claims (name, given_name, family_name, preferred_username,\nnickname, picture, profile, website, gender, birthdate, zoneinfo, locale,\nupdated_at) can be set as properties and will be returned via the\nuserinfo endpoint and ID token when the 'profile' scope is requested.",
                 e
             )
         })?;

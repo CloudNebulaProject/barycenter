@@ -28,6 +28,92 @@ use std::time::SystemTime;
 use tower_http::services::ServeDir;
 use urlencoding;
 
+/// Standard OIDC profile claims (returned when `profile` scope is granted).
+const PROFILE_CLAIMS: &[&str] = &[
+    "preferred_username",
+    "name",
+    "given_name",
+    "family_name",
+    "nickname",
+    "picture",
+    "profile",
+    "website",
+    "gender",
+    "birthdate",
+    "zoneinfo",
+    "locale",
+    "updated_at",
+];
+
+/// Standard OIDC email claims (returned when `email` scope is granted).
+const EMAIL_CLAIMS: &[&str] = &["email", "email_verified"];
+
+fn has_scope(scope_str: &str, target: &str) -> bool {
+    scope_str.split_whitespace().any(|s| s == target)
+}
+
+/// Gather OIDC claims for a user based on the granted scopes.
+///
+/// Reads all properties for the user in a single query and returns
+/// the subset that matches the requested scopes.
+async fn gather_claims(
+    db: &DatabaseConnection,
+    subject: &str,
+    scope: &str,
+) -> Result<serde_json::Map<String, Value>, CrabError> {
+    let mut claims = serde_json::Map::new();
+    claims.insert("sub".to_string(), Value::String(subject.to_string()));
+
+    let include_profile = has_scope(scope, "profile");
+    let include_email = has_scope(scope, "email");
+
+    if !include_profile && !include_email {
+        return Ok(claims);
+    }
+
+    let props = storage::get_properties_for_owner(db, subject).await?;
+    let user = storage::get_user_by_subject(db, subject).await?;
+
+    if include_profile {
+        for &claim in PROFILE_CLAIMS {
+            if claim == "preferred_username" {
+                // Fall back to username from users table
+                if let Some(val) = props.get(claim) {
+                    claims.insert(claim.to_string(), val.clone());
+                } else if let Some(ref u) = user {
+                    claims.insert(
+                        claim.to_string(),
+                        Value::String(u.username.clone()),
+                    );
+                }
+            } else if let Some(val) = props.get(claim) {
+                claims.insert(claim.to_string(), val.clone());
+            }
+        }
+    }
+
+    if include_email {
+        if let Some(val) = props.get("email") {
+            claims.insert("email".to_string(), val.clone());
+        } else if let Some(ref u) = user {
+            if let Some(ref email) = u.email {
+                claims.insert("email".to_string(), Value::String(email.clone()));
+            }
+        }
+
+        if let Some(val) = props.get("email_verified") {
+            claims.insert("email_verified".to_string(), val.clone());
+        } else if let Some(ref u) = user {
+            claims.insert(
+                "email_verified".to_string(),
+                Value::Bool(u.email_verified != 0),
+            );
+        }
+    }
+
+    Ok(claims)
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<Settings>,
@@ -249,7 +335,10 @@ async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
         "code_challenge_methods_supported": ["S256"],
         "claims_supported": [
             "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce",
-            "name", "given_name", "family_name", "email", "email_verified"
+            "preferred_username", "name", "given_name", "family_name",
+            "nickname", "picture", "profile", "website",
+            "gender", "birthdate", "zoneinfo", "locale", "updated_at",
+            "email", "email_verified"
         ],
         // OIDC Core 1.0 features
         "prompt_values_supported": ["none", "login", "consent", "select_account"],
@@ -724,6 +813,7 @@ async fn authorize(
                 &state,
                 &q.client_id,
                 &subject,
+                &q.scope,
                 nonce.as_deref(),
                 auth_time,
                 None,
@@ -786,6 +876,7 @@ async fn authorize(
                 &state,
                 &q.client_id,
                 &subject,
+                &q.scope,
                 nonce.as_deref(),
                 auth_time,
                 Some(&access.token),
@@ -1086,6 +1177,7 @@ async fn build_id_token(
     state: &AppState,
     client_id: &str,
     subject: &str,
+    scope: &str,
     nonce: Option<&str>,
     auth_time: Option<i64>,
     access_token: Option<&str>, // For at_hash calculation
@@ -1133,6 +1225,17 @@ async fn build_id_token(
         let half = &digest[..16]; // left-most 128 bits
         let at_hash = Base64UrlUnpadded::encode_string(half);
         let _ = payload.set_claim("at_hash", Some(serde_json::Value::String(at_hash)));
+    }
+
+    // Add scope-gated profile/email claims
+    if let Ok(user_claims) = gather_claims(&state.db, subject, scope).await {
+        for (key, value) in user_claims {
+            // Skip sub/iss/aud/exp/iat — already set above
+            if key == "sub" {
+                continue;
+            }
+            let _ = payload.set_claim(&key, Some(value));
+        }
     }
 
     state
@@ -1328,6 +1431,7 @@ async fn handle_authorization_code_grant(
         &state,
         &client_id,
         &code_row.subject,
+        &code_row.scope,
         code_row.nonce.as_deref(),
         code_row.auth_time,
         Some(&access.token),
@@ -1579,6 +1683,7 @@ async fn handle_refresh_token_grant(
         &state,
         &client_id,
         &refresh_token.subject,
+        &refresh_token.scope,
         None,
         None,
         Some(&access.token),
@@ -1809,6 +1914,7 @@ async fn handle_device_code_grant(
         &state,
         &client_id,
         &subject,
+        &consumed_device_code.scope,
         None, // No nonce for device flow
         consumed_device_code.auth_time,
         Some(&access.token),
@@ -2119,26 +2225,18 @@ async fn userinfo(
             )
         }
     };
-    let mut claims = serde_json::Map::new();
-    claims.insert(
-        "sub".to_string(),
-        serde_json::Value::String(token_row.subject.clone()),
-    );
-    // Optional: email claims from properties
-    if let Ok(Some(email)) = storage::get_property(&state.db, &token_row.subject, "email").await {
-        if let Some(email_str) = email.as_str() {
-            claims.insert(
-                "email".to_string(),
-                serde_json::Value::String(email_str.to_string()),
+    let claims = match gather_claims(&state.db, &token_row.subject, &token_row.scope).await {
+        Ok(c) => c,
+        Err(_) => {
+            let mut c = serde_json::Map::new();
+            c.insert(
+                "sub".to_string(),
+                Value::String(token_row.subject.clone()),
             );
+            c
         }
-    }
-    if let Ok(Some(verified)) =
-        storage::get_property(&state.db, &token_row.subject, "email_verified").await
-    {
-        claims.insert("email_verified".to_string(), verified);
-    }
-    (StatusCode::OK, Json(serde_json::Value::Object(claims))).into_response()
+    };
+    (StatusCode::OK, Json(Value::Object(claims))).into_response()
 }
 
 #[derive(Debug, Deserialize)]
