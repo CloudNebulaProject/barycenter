@@ -633,3 +633,587 @@ pub async fn cleanup_expired_peer_requests(
 
     Ok(result.rows_affected)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::Database;
+    use sea_orm_migration::MigratorTrait;
+
+    /// Create a temporary SQLite database with all migrations applied.
+    async fn setup_db() -> (DatabaseConnection, tempfile::NamedTempFile) {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite://{}?mode=rwc", temp.path().to_str().unwrap());
+        let db = Database::connect(&db_url).await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+        (db, temp)
+    }
+
+    // -----------------------------------------------------------------------
+    // TrustedPeer CRUD
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_trusted_peer_create_and_get_by_id() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db,
+            "peer.example.com",
+            "https://auth.peer.example.com",
+            "client123",
+            Some("secret456"),
+            "existing_only",
+            "trust_discovery",
+        )
+        .await
+        .unwrap();
+
+        assert!(!id.is_empty());
+
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.domain, "peer.example.com");
+        assert_eq!(peer.issuer_url, "https://auth.peer.example.com");
+        assert_eq!(peer.client_id, "client123");
+        assert_eq!(peer.client_secret.as_deref(), Some("secret456"));
+        assert_eq!(peer.mapping_policy, "existing_only");
+        assert_eq!(peer.jwks_pin_mode, "trust_discovery");
+        assert_eq!(peer.status, "pending_verification");
+        assert_eq!(peer.scopes, "openid email profile");
+        assert!(!peer.trust_peer_acr);
+        assert!(!peer.sync_profile);
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_get_by_domain() {
+        let (db, _tmp) = setup_db().await;
+
+        create_trusted_peer(
+            &db,
+            "peer.example.com",
+            "https://auth.peer.example.com",
+            "client123",
+            None,
+            "auto_provision",
+            "tofu",
+        )
+        .await
+        .unwrap();
+
+        let peer = get_trusted_peer_by_domain(&db, "peer.example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(peer.domain, "peer.example.com");
+
+        // Non-existent domain
+        let none = get_trusted_peer_by_domain(&db, "nonexistent.com")
+            .await
+            .unwrap();
+        assert!(none.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_get_active_by_domain() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db,
+            "peer.example.com",
+            "https://auth.peer.example.com",
+            "client123",
+            None,
+            "existing_only",
+            "trust_discovery",
+        )
+        .await
+        .unwrap();
+
+        // Initially pending_verification - should not be found as active.
+        let none = get_active_trusted_peer_by_domain(&db, "peer.example.com")
+            .await
+            .unwrap();
+        assert!(none.is_none());
+
+        // Activate and try again.
+        update_trusted_peer_status(&db, &id, "active").await.unwrap();
+        let peer = get_active_trusted_peer_by_domain(&db, "peer.example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(peer.status, "active");
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_list() {
+        let (db, _tmp) = setup_db().await;
+
+        let peers = list_trusted_peers(&db).await.unwrap();
+        assert_eq!(peers.len(), 0);
+
+        create_trusted_peer(&db, "a.com", "https://a.com", "c1", None, "existing_only", "tofu")
+            .await
+            .unwrap();
+        create_trusted_peer(&db, "b.com", "https://b.com", "c2", None, "auto_provision", "tofu")
+            .await
+            .unwrap();
+
+        let peers = list_trusted_peers(&db).await.unwrap();
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_update_status() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.status, "pending_verification");
+
+        update_trusted_peer_status(&db, &id, "active").await.unwrap();
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.status, "active");
+
+        update_trusted_peer_status(&db, &id, "suspended").await.unwrap();
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.status, "suspended");
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_update_discovery() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        // Initially no endpoints are set.
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert!(peer.token_endpoint.is_none());
+        assert!(peer.authorization_endpoint.is_none());
+
+        update_trusted_peer_discovery(
+            &db,
+            &id,
+            Some("https://peer.example.com/token"),
+            Some("https://peer.example.com/authorize"),
+            Some("https://peer.example.com/userinfo"),
+            Some("https://peer.example.com/.well-known/jwks.json"),
+            Some(r#"{"keys":[]}"#),
+        )
+        .await
+        .unwrap();
+
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.token_endpoint.as_deref(), Some("https://peer.example.com/token"));
+        assert_eq!(peer.authorization_endpoint.as_deref(), Some("https://peer.example.com/authorize"));
+        assert_eq!(peer.userinfo_endpoint.as_deref(), Some("https://peer.example.com/userinfo"));
+        assert_eq!(peer.jwks_uri.as_deref(), Some("https://peer.example.com/.well-known/jwks.json"));
+        assert_eq!(peer.pinned_jwks.as_deref(), Some(r#"{"keys":[]}"#));
+        assert!(peer.last_discovery_refresh.is_some());
+        assert!(peer.last_discovery_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_update_verification() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        update_trusted_peer_verification(&db, &id, Some("entity_proof"), Some(true))
+            .await
+            .unwrap();
+
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.verification_level.as_deref(), Some("entity_proof"));
+        assert_eq!(peer.webfinger_issuer_match, Some(true));
+        assert!(peer.verified_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_update_discovery_error() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        update_trusted_peer_discovery_error(&db, &id, "connection refused")
+            .await
+            .unwrap();
+
+        let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
+        assert_eq!(peer.last_discovery_error.as_deref(), Some("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_delete() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        assert!(get_trusted_peer_by_id(&db, &id).await.unwrap().is_some());
+
+        delete_trusted_peer(&db, &id).await.unwrap();
+
+        assert!(get_trusted_peer_by_id(&db, &id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_trusted_peer_get_by_issuer_url() {
+        let (db, _tmp) = setup_db().await;
+
+        create_trusted_peer(
+            &db, "peer.example.com", "https://auth.peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        let peer = get_trusted_peer_by_issuer_url(&db, "https://auth.peer.example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(peer.domain, "peer.example.com");
+
+        let none = get_trusted_peer_by_issuer_url(&db, "https://nonexistent.com")
+            .await
+            .unwrap();
+        assert!(none.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // FederatedIdentity CRUD
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_federated_identity_link_and_find() {
+        let (db, _tmp) = setup_db().await;
+
+        let peer_id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        let link_id = link_federated_identity(
+            &db,
+            "local_user_1",
+            &peer_id,
+            "ext_sub_123",
+            "https://peer.example.com",
+            Some("user@peer.example.com"),
+        )
+        .await
+        .unwrap();
+
+        assert!(!link_id.is_empty());
+
+        // Find by peer + external subject
+        let found = find_local_user_by_federated_id(&db, &peer_id, "ext_sub_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.local_user_id, "local_user_1");
+        assert_eq!(found.external_subject, "ext_sub_123");
+        assert_eq!(found.external_issuer, "https://peer.example.com");
+        assert_eq!(found.external_email.as_deref(), Some("user@peer.example.com"));
+        assert!(found.last_login_at.is_none());
+
+        // Non-existent
+        let none = find_local_user_by_federated_id(&db, &peer_id, "nonexistent")
+            .await
+            .unwrap();
+        assert!(none.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_federated_identity_list_for_user() {
+        let (db, _tmp) = setup_db().await;
+
+        let peer_id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        // No identities yet.
+        let identities = list_federated_identities_for_user(&db, "local_user_1")
+            .await
+            .unwrap();
+        assert!(identities.is_empty());
+
+        // Link two identities from different peers to the same local user.
+        link_federated_identity(
+            &db, "local_user_1", &peer_id, "ext1", "https://peer.example.com", None,
+        ).await.unwrap();
+
+        let peer_id2 = create_trusted_peer(
+            &db, "other.example.com", "https://other.example.com",
+            "c2", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        link_federated_identity(
+            &db, "local_user_1", &peer_id2, "ext2", "https://other.example.com", None,
+        ).await.unwrap();
+
+        let identities = list_federated_identities_for_user(&db, "local_user_1")
+            .await
+            .unwrap();
+        assert_eq!(identities.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_federated_identity_update_last_login() {
+        let (db, _tmp) = setup_db().await;
+
+        let peer_id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        let link_id = link_federated_identity(
+            &db, "local_user_1", &peer_id, "ext_sub", "https://peer.example.com", None,
+        ).await.unwrap();
+
+        // Initially no last_login_at.
+        let identity = find_local_user_by_federated_id(&db, &peer_id, "ext_sub")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(identity.last_login_at.is_none());
+
+        // Update last_login_at.
+        update_federated_identity_last_login(&db, &link_id).await.unwrap();
+
+        let identity = find_local_user_by_federated_id(&db, &peer_id, "ext_sub")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(identity.last_login_at.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // FederationAuthRequest CRUD
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_federation_auth_request_create_and_get() {
+        let (db, _tmp) = setup_db().await;
+
+        let peer_id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        let id = create_federation_auth_request(
+            &db,
+            &peer_id,
+            "state_abc",
+            "nonce_xyz",
+            "verifier_123",
+            "client_id=foo&scope=openid",
+            Some("session_456"),
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        assert!(!id.is_empty());
+
+        let req = get_federation_auth_request_by_state(&db, "state_abc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(req.peer_id, peer_id);
+        assert_eq!(req.state, "state_abc");
+        assert_eq!(req.nonce, "nonce_xyz");
+        assert_eq!(req.pkce_verifier, "verifier_123");
+        assert_eq!(req.original_authorize_params, "client_id=foo&scope=openid");
+        assert_eq!(req.original_session_id.as_deref(), Some("session_456"));
+        assert_eq!(req.expires_at, "2099-01-01T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn test_federation_auth_request_get_nonexistent() {
+        let (db, _tmp) = setup_db().await;
+
+        let none = get_federation_auth_request_by_state(&db, "nonexistent_state")
+            .await
+            .unwrap();
+        assert!(none.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_federation_auth_request_delete() {
+        let (db, _tmp) = setup_db().await;
+
+        let peer_id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        let id = create_federation_auth_request(
+            &db, &peer_id, "state_del", "nonce", "verifier",
+            "params", None, "2099-01-01T00:00:00Z",
+        ).await.unwrap();
+
+        assert!(get_federation_auth_request_by_state(&db, "state_del").await.unwrap().is_some());
+
+        delete_federation_auth_request(&db, &id).await.unwrap();
+
+        assert!(get_federation_auth_request_by_state(&db, "state_del").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_federation_auth_request_cleanup_expired() {
+        let (db, _tmp) = setup_db().await;
+
+        let peer_id = create_trusted_peer(
+            &db, "peer.example.com", "https://peer.example.com",
+            "c1", None, "existing_only", "tofu",
+        ).await.unwrap();
+
+        // Create an already-expired request.
+        create_federation_auth_request(
+            &db, &peer_id, "state_expired", "nonce", "verifier",
+            "params", None, "2000-01-01T00:00:00Z", // well in the past
+        ).await.unwrap();
+
+        // Create a valid (future) request.
+        create_federation_auth_request(
+            &db, &peer_id, "state_valid", "nonce", "verifier",
+            "params", None, "2099-01-01T00:00:00Z",
+        ).await.unwrap();
+
+        let cleaned = cleanup_expired_federation_requests(&db).await.unwrap();
+        assert_eq!(cleaned, 1);
+
+        // The expired one is gone.
+        assert!(get_federation_auth_request_by_state(&db, "state_expired").await.unwrap().is_none());
+        // The valid one remains.
+        assert!(get_federation_auth_request_by_state(&db, "state_valid").await.unwrap().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerRequest CRUD
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_peer_request_create_and_get() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_peer_request(
+            &db,
+            "https://remote.example.com",
+            "remote.example.com",
+            "client_at_us_123",
+            "https://remote.example.com/federation/callback",
+            "eyJ...",
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        assert!(!id.is_empty());
+
+        let req = get_peer_request(&db, &id).await.unwrap().unwrap();
+        assert_eq!(req.requesting_issuer, "https://remote.example.com");
+        assert_eq!(req.requesting_domain, "remote.example.com");
+        assert_eq!(req.client_id_at_us, "client_at_us_123");
+        assert_eq!(req.callback_endpoint, "https://remote.example.com/federation/callback");
+        assert_eq!(req.request_jws, "eyJ...");
+        assert_eq!(req.status, "pending_approval");
+    }
+
+    #[tokio::test]
+    async fn test_peer_request_list_pending() {
+        let (db, _tmp) = setup_db().await;
+
+        // No requests yet.
+        let pending = list_pending_peer_requests(&db).await.unwrap();
+        assert!(pending.is_empty());
+
+        // Create two pending requests.
+        create_peer_request(
+            &db, "https://a.com", "a.com", "c1", "https://a.com/cb", "jws1", "2099-01-01T00:00:00Z",
+        ).await.unwrap();
+        let id2 = create_peer_request(
+            &db, "https://b.com", "b.com", "c2", "https://b.com/cb", "jws2", "2099-01-01T00:00:00Z",
+        ).await.unwrap();
+
+        let pending = list_pending_peer_requests(&db).await.unwrap();
+        assert_eq!(pending.len(), 2);
+
+        // Approve one — it should no longer appear in pending.
+        update_peer_request_status(&db, &id2, "approved").await.unwrap();
+        let pending = list_pending_peer_requests(&db).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].requesting_domain, "a.com");
+    }
+
+    #[tokio::test]
+    async fn test_peer_request_update_status() {
+        let (db, _tmp) = setup_db().await;
+
+        let id = create_peer_request(
+            &db, "https://remote.com", "remote.com", "c1", "https://remote.com/cb",
+            "jws", "2099-01-01T00:00:00Z",
+        ).await.unwrap();
+
+        let req = get_peer_request(&db, &id).await.unwrap().unwrap();
+        assert_eq!(req.status, "pending_approval");
+
+        update_peer_request_status(&db, &id, "approved").await.unwrap();
+        let req = get_peer_request(&db, &id).await.unwrap().unwrap();
+        assert_eq!(req.status, "approved");
+
+        update_peer_request_status(&db, &id, "rejected").await.unwrap();
+        let req = get_peer_request(&db, &id).await.unwrap().unwrap();
+        assert_eq!(req.status, "rejected");
+    }
+
+    #[tokio::test]
+    async fn test_peer_request_cleanup_expired() {
+        let (db, _tmp) = setup_db().await;
+
+        // Create an expired pending request.
+        create_peer_request(
+            &db, "https://expired.com", "expired.com", "c1", "https://expired.com/cb",
+            "jws", "2000-01-01T00:00:00Z",
+        ).await.unwrap();
+
+        // Create a valid pending request.
+        create_peer_request(
+            &db, "https://valid.com", "valid.com", "c2", "https://valid.com/cb",
+            "jws", "2099-01-01T00:00:00Z",
+        ).await.unwrap();
+
+        // Create an expired but already approved request (should NOT be cleaned up).
+        let approved_id = create_peer_request(
+            &db, "https://approved.com", "approved.com", "c3", "https://approved.com/cb",
+            "jws", "2000-01-01T00:00:00Z",
+        ).await.unwrap();
+        update_peer_request_status(&db, &approved_id, "approved").await.unwrap();
+
+        let cleaned = cleanup_expired_peer_requests(&db).await.unwrap();
+        assert_eq!(cleaned, 1); // only the expired pending one
+
+        // Valid request remains.
+        let pending = list_pending_peer_requests(&db).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].requesting_domain, "valid.com");
+
+        // Approved request still exists.
+        let approved = get_peer_request(&db, &approved_id).await.unwrap();
+        assert!(approved.is_some());
+    }
+}

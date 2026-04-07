@@ -354,4 +354,242 @@ mod tests {
             "malformed payload: test"
         );
     }
+
+    #[test]
+    fn test_entity_proof_claims_deserialization() {
+        let json = r#"{
+            "iss": "https://idp.example.com",
+            "sub": "https://idp.example.com",
+            "iat": 1700000000,
+            "exp": 1700086400,
+            "domain": "example.com",
+            "federation": {
+                "protocol": "barycenter-p2p-v1",
+                "webfinger_domain": "example.com",
+                "callback_endpoint": "https://idp.example.com/federation/callback",
+                "peer_request_endpoint": "https://idp.example.com/federation/peer-request"
+            },
+            "jwks": {"keys": []}
+        }"#;
+        let claims: EntityProofClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.iss, "https://idp.example.com");
+        assert_eq!(claims.sub, "https://idp.example.com");
+        assert_eq!(claims.domain, "example.com");
+        assert_eq!(claims.federation.protocol, "barycenter-p2p-v1");
+        assert_eq!(claims.federation.webfinger_domain, "example.com");
+        assert_eq!(
+            claims.federation.callback_endpoint,
+            "https://idp.example.com/federation/callback"
+        );
+    }
+
+    #[test]
+    fn test_verify_entity_proof_malformed_jws() {
+        // Not a valid JWS (only 2 parts)
+        let result = verify_entity_proof("part1.part2", "example.com", "https://example.com");
+        match result {
+            Err(EntityProofError::MalformedPayload(msg)) => {
+                assert!(msg.contains("3 parts"));
+            }
+            other => panic!("Expected MalformedPayload, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_entity_proof_invalid_base64_payload() {
+        let result = verify_entity_proof(
+            "eyJ0eXAiOiJKV1QifQ.!!!invalid!!!.sig",
+            "example.com",
+            "https://example.com",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_entity_proof_no_jwks_claim() {
+        // Valid base64-encoded header and payload, but payload has no jwks
+        let header = base64ct::Base64UrlUnpadded::encode_string(
+            br#"{"alg":"RS256","typ":"entity-proof+jwt"}"#,
+        );
+        let payload = base64ct::Base64UrlUnpadded::encode_string(
+            br#"{"iss":"https://example.com","sub":"https://example.com","iat":1700000000,"exp":9999999999,"domain":"example.com"}"#,
+        );
+        let jws = format!("{}.{}.fakesig", header, payload);
+
+        let result = verify_entity_proof(&jws, "example.com", "https://example.com");
+        match result {
+            Err(EntityProofError::MalformedPayload(msg)) => {
+                assert!(msg.contains("jwks"));
+            }
+            other => panic!("Expected MalformedPayload about jwks, got: {:?}", other),
+        }
+    }
+
+    /// Build a valid entity proof JWS for testing.
+    fn build_test_entity_proof(
+        domain: &str,
+        issuer: &str,
+        exp_offset_secs: i64,
+        iat_offset_secs: i64,
+    ) -> (String, josekit::jwk::Jwk) {
+        use josekit::jws::RS256;
+        use josekit::jwt::{self, JwtPayload};
+
+        // Generate a fresh RSA key.
+        let private_key = josekit::jwk::Jwk::generate_rsa_key(2048).unwrap();
+        let mut public_key = private_key.to_public_key().unwrap();
+        public_key.set_key_id("test-kid");
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let jwks_value = json!({
+            "keys": [serde_json::to_value(&public_key).unwrap()]
+        });
+
+        let mut payload = JwtPayload::new();
+        payload.set_issuer(issuer);
+        payload.set_subject(issuer);
+        payload
+            .set_claim("iat", Some(json!(now + iat_offset_secs)))
+            .ok();
+        payload
+            .set_claim("exp", Some(json!(now + exp_offset_secs)))
+            .ok();
+        payload
+            .set_claim("domain", Some(json!(domain)))
+            .ok();
+        payload
+            .set_claim(
+                "federation",
+                Some(json!({
+                    "protocol": "barycenter-p2p-v1",
+                    "webfinger_domain": domain,
+                    "callback_endpoint": format!("{}/federation/callback", issuer),
+                    "peer_request_endpoint": format!("{}/federation/peer-request", issuer),
+                })),
+            )
+            .ok();
+        payload.set_claim("jwks", Some(jwks_value)).ok();
+
+        let mut header = josekit::jws::JwsHeader::new();
+        header.set_algorithm("RS256");
+        header
+            .set_claim("typ", Some(json!("entity-proof+jwt")))
+            .ok();
+        header.set_key_id("test-kid");
+
+        let signer = RS256.signer_from_jwk(&private_key).unwrap();
+        let jws = jwt::encode_with_signer(&payload, &header, &signer).unwrap();
+
+        (jws, private_key)
+    }
+
+    #[test]
+    fn test_verify_entity_proof_valid() {
+        let (jws, _key) = build_test_entity_proof(
+            "example.com",
+            "https://idp.example.com",
+            86400,  // exp: +24h
+            0,      // iat: now
+        );
+
+        let claims = verify_entity_proof(&jws, "example.com", "https://idp.example.com").unwrap();
+        assert_eq!(claims.iss, "https://idp.example.com");
+        assert_eq!(claims.sub, "https://idp.example.com");
+        assert_eq!(claims.domain, "example.com");
+        assert_eq!(claims.federation.protocol, "barycenter-p2p-v1");
+    }
+
+    #[test]
+    fn test_verify_entity_proof_domain_mismatch() {
+        let (jws, _key) = build_test_entity_proof(
+            "example.com",
+            "https://idp.example.com",
+            86400,
+            0,
+        );
+
+        let result = verify_entity_proof(&jws, "wrong.com", "https://idp.example.com");
+        match result {
+            Err(EntityProofError::DomainMismatch(expected, actual)) => {
+                assert_eq!(expected, "wrong.com");
+                assert_eq!(actual, "example.com");
+            }
+            other => panic!("Expected DomainMismatch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_entity_proof_issuer_mismatch() {
+        let (jws, _key) = build_test_entity_proof(
+            "example.com",
+            "https://idp.example.com",
+            86400,
+            0,
+        );
+
+        let result = verify_entity_proof(&jws, "example.com", "https://wrong.example.com");
+        match result {
+            Err(EntityProofError::IssuerMismatch(expected, actual)) => {
+                assert_eq!(expected, "https://wrong.example.com");
+                assert_eq!(actual, "https://idp.example.com");
+            }
+            other => panic!("Expected IssuerMismatch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_entity_proof_expired() {
+        let (jws, _key) = build_test_entity_proof(
+            "example.com",
+            "https://idp.example.com",
+            -3600,  // expired 1 hour ago
+            -7200,  // issued 2 hours ago
+        );
+
+        let result = verify_entity_proof(&jws, "example.com", "https://idp.example.com");
+        match result {
+            Err(EntityProofError::Expired) => {} // expected
+            other => panic!("Expected Expired, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_entity_proof_iat_in_future() {
+        let (jws, _key) = build_test_entity_proof(
+            "example.com",
+            "https://idp.example.com",
+            172800,   // exp: +48h
+            86400,    // iat: +24h (in the future)
+        );
+
+        let result = verify_entity_proof(&jws, "example.com", "https://idp.example.com");
+        match result {
+            Err(EntityProofError::MalformedPayload(msg)) => {
+                assert!(msg.contains("future"), "Expected 'future' in message: {}", msg);
+            }
+            other => panic!("Expected MalformedPayload about future iat, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_entity_proof_tampered_signature() {
+        let (mut jws, _key) = build_test_entity_proof(
+            "example.com",
+            "https://idp.example.com",
+            86400,
+            0,
+        );
+
+        // Tamper with the signature by modifying the last character.
+        let last_char = jws.pop().unwrap();
+        let replacement = if last_char == 'A' { 'B' } else { 'A' };
+        jws.push(replacement);
+
+        let result = verify_entity_proof(&jws, "example.com", "https://idp.example.com");
+        assert!(matches!(result, Err(EntityProofError::InvalidSignature)));
+    }
 }

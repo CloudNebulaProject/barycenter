@@ -241,3 +241,396 @@ async fn find_unique_username(
         "could not generate a unique username after 10 attempts".to_string(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::Database;
+    use sea_orm_migration::MigratorTrait;
+
+    /// Create a temporary in-memory-like SQLite database with all migrations applied.
+    async fn setup_db() -> (DatabaseConnection, tempfile::NamedTempFile) {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite://{}?mode=rwc", temp.path().to_str().unwrap());
+        let db = Database::connect(&db_url).await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+        (db, temp)
+    }
+
+    /// Create a trusted peer in the DB and return its ID.
+    async fn create_peer(db: &DatabaseConnection, mapping_policy: &str) -> String {
+        let peer_id = crate::federation::storage::create_trusted_peer(
+            db,
+            "peer.example.com",
+            "https://auth.peer.example.com",
+            "client123",
+            Some("secret"),
+            mapping_policy,
+            "trust_discovery",
+        )
+        .await
+        .unwrap();
+
+        // Activate it so it can be used.
+        crate::federation::storage::update_trusted_peer_status(db, &peer_id, "active")
+            .await
+            .unwrap();
+
+        peer_id
+    }
+
+    // -----------------------------------------------------------------------
+    // MappingPolicy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_mapping_policy_from_str() {
+        assert_eq!(
+            MappingPolicy::from_str("existing_only"),
+            MappingPolicy::ExistingOnly
+        );
+        assert_eq!(
+            MappingPolicy::from_str("auto_link_by_email"),
+            MappingPolicy::AutoLinkByEmail
+        );
+        assert_eq!(
+            MappingPolicy::from_str("auto_provision"),
+            MappingPolicy::AutoProvision
+        );
+        // Unknown strings default to ExistingOnly
+        assert_eq!(
+            MappingPolicy::from_str("unknown"),
+            MappingPolicy::ExistingOnly
+        );
+        assert_eq!(MappingPolicy::from_str(""), MappingPolicy::ExistingOnly);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_federated_identity — existing_only
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_existing_only_no_link() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "existing_only").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = resolve_federated_identity(
+            &db,
+            &peer,
+            "external_sub_123",
+            "https://auth.peer.example.com",
+            Some("user@peer.example.com"),
+            true,
+            Some("Test User"),
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            IdentityResolutionError::NoExistingLink {
+                peer_domain,
+                external_subject,
+            } => {
+                assert_eq!(peer_domain, "peer.example.com");
+                assert_eq!(external_subject, "external_sub_123");
+            }
+            e => panic!("Expected NoExistingLink, got: {:?}", e),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_federated_identity — existing link reused
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_existing_link_reused() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "existing_only").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Create a local user first.
+        let user = crate::storage::create_user(&db, "localuser", "password123", None)
+            .await
+            .unwrap();
+
+        // Manually create a federated identity link.
+        crate::federation::storage::link_federated_identity(
+            &db,
+            &user.subject,
+            &peer_id,
+            "external_sub_123",
+            "https://auth.peer.example.com",
+            Some("user@peer.example.com"),
+        )
+        .await
+        .unwrap();
+
+        // Resolve should find the existing link and return the local subject.
+        let result = resolve_federated_identity(
+            &db,
+            &peer,
+            "external_sub_123",
+            "https://auth.peer.example.com",
+            Some("user@peer.example.com"),
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, user.subject);
+
+        // Verify last_login_at was updated.
+        let identity = crate::federation::storage::find_local_user_by_federated_id(
+            &db,
+            &peer_id,
+            "external_sub_123",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(identity.last_login_at.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_federated_identity — auto_link_by_email
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_auto_link_by_email() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "auto_link_by_email").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Create a local user with a matching email.
+        let user = crate::storage::create_user(
+            &db,
+            "localuser",
+            "password123",
+            Some("user@example.com".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // Resolve should auto-link by matching email.
+        let result = resolve_federated_identity(
+            &db,
+            &peer,
+            "ext_sub_456",
+            "https://auth.peer.example.com",
+            Some("user@example.com"),
+            true,
+            Some("Test User"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, user.subject);
+
+        // Verify that a federated identity link was created.
+        let identities =
+            crate::federation::storage::list_federated_identities_for_user(&db, &user.subject)
+                .await
+                .unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].external_subject, "ext_sub_456");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auto_link_email_not_verified() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "auto_link_by_email").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Create a local user with email.
+        let _user = crate::storage::create_user(
+            &db,
+            "localuser",
+            "password123",
+            Some("user@example.com".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // Should fail because email_verified is false.
+        let result = resolve_federated_identity(
+            &db,
+            &peer,
+            "ext_sub_456",
+            "https://auth.peer.example.com",
+            Some("user@example.com"),
+            false, // not verified
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            IdentityResolutionError::EmailNotVerified => {} // expected
+            e => panic!("Expected EmailNotVerified, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auto_link_no_email_provided() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "auto_link_by_email").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Should fail because no email was provided.
+        let result = resolve_federated_identity(
+            &db,
+            &peer,
+            "ext_sub_456",
+            "https://auth.peer.example.com",
+            None, // no email
+            true,
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            IdentityResolutionError::EmailNotVerified => {} // expected (no email treated as unverified)
+            e => panic!("Expected EmailNotVerified, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auto_link_no_matching_local_user() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "auto_link_by_email").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // No local user with this email exists.
+        let result = resolve_federated_identity(
+            &db,
+            &peer,
+            "ext_sub_456",
+            "https://auth.peer.example.com",
+            Some("nonexistent@example.com"),
+            true,
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            IdentityResolutionError::NoMatchingLocalUser { email } => {
+                assert_eq!(email, "nonexistent@example.com");
+            }
+            e => panic!("Expected NoMatchingLocalUser, got: {:?}", e),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_federated_identity — auto_provision
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_auto_provision() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "auto_provision").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Should auto-create a new user.
+        let local_subject = resolve_federated_identity(
+            &db,
+            &peer,
+            "ext_sub_789",
+            "https://auth.peer.example.com",
+            Some("newuser@peer.example.com"),
+            true,
+            Some("New User"),
+        )
+        .await
+        .unwrap();
+
+        // Verify a local user was created.
+        assert!(!local_subject.is_empty());
+
+        // Verify federated identity link was created.
+        let identity = crate::federation::storage::find_local_user_by_federated_id(
+            &db,
+            &peer_id,
+            "ext_sub_789",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(identity.local_user_id, local_subject);
+        assert_eq!(
+            identity.external_email.as_deref(),
+            Some("newuser@peer.example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_auto_provision_no_email() {
+        let (db, _tmp) = setup_db().await;
+        let peer_id = create_peer(&db, "auto_provision").await;
+        let peer = crate::federation::storage::get_trusted_peer_by_id(&db, &peer_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Should still create a user with a generated username.
+        let local_subject = resolve_federated_identity(
+            &db,
+            &peer,
+            "ext_sub_abc",
+            "https://auth.peer.example.com",
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(!local_subject.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // IdentityResolutionError Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_identity_resolution_error_display() {
+        let err = IdentityResolutionError::NoExistingLink {
+            peer_domain: "example.com".into(),
+            external_subject: "sub123".into(),
+        };
+        assert!(err.to_string().contains("sub123"));
+        assert!(err.to_string().contains("example.com"));
+
+        let err = IdentityResolutionError::EmailNotVerified;
+        assert!(err.to_string().contains("email_verified"));
+
+        let err = IdentityResolutionError::NoMatchingLocalUser {
+            email: "test@test.com".into(),
+        };
+        assert!(err.to_string().contains("test@test.com"));
+    }
+}

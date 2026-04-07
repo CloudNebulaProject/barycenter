@@ -509,7 +509,232 @@ mod tests {
     #[test]
     fn test_build_authorize_url() {
         let client = OidcRpClient::new();
-        let peer = TrustedPeer {
+        let peer = make_test_peer();
+
+        let url = client
+            .build_authorize_url(&peer, "state123", "nonce456", "challenge789", "http://localhost/callback")
+            .unwrap();
+
+        assert!(url.starts_with("https://other.example.com/authorize?"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("client_id=my-client-id"));
+        assert!(url.contains("state=state123"));
+        assert!(url.contains("nonce=nonce456"));
+        assert!(url.contains("code_challenge=challenge789"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("scope=openid+email+profile"));
+    }
+
+    #[test]
+    fn test_build_authorize_url_missing_endpoint() {
+        let client = OidcRpClient::new();
+        let mut peer = make_test_peer();
+        peer.authorization_endpoint = None;
+
+        let result = client.build_authorize_url(
+            &peer, "state", "nonce", "challenge", "http://localhost/callback",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_pkce_s256_verification() {
+        // Verify that challenge = BASE64URL(SHA256(verifier))
+        let (verifier, challenge) = OidcRpClient::generate_pkce();
+        let mut hasher = Sha256::new();
+        hasher.update(verifier.as_bytes());
+        let hash = hasher.finalize();
+        let expected = base64ct::Base64UrlUnpadded::encode_string(&hash);
+        assert_eq!(challenge, expected);
+    }
+
+    #[test]
+    fn test_provider_metadata_deserialization() {
+        let json = r#"{
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "jwks_uri": "https://auth.example.com/.well-known/jwks.json",
+            "userinfo_endpoint": "https://auth.example.com/userinfo"
+        }"#;
+        let meta: ProviderMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.issuer, "https://auth.example.com");
+        assert_eq!(
+            meta.userinfo_endpoint,
+            Some("https://auth.example.com/userinfo".into())
+        );
+        assert!(meta.scopes_supported.is_none());
+        assert!(meta.registration_endpoint.is_none());
+    }
+
+    #[test]
+    fn test_provider_metadata_full() {
+        let json = r#"{
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "jwks_uri": "https://auth.example.com/.well-known/jwks.json",
+            "scopes_supported": ["openid", "email", "profile"],
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "token_endpoint_auth_methods_supported": ["client_secret_basic"],
+            "code_challenge_methods_supported": ["S256"]
+        }"#;
+        let meta: ProviderMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.scopes_supported.as_ref().unwrap().len(), 3);
+        assert_eq!(
+            meta.code_challenge_methods_supported.as_ref().unwrap(),
+            &["S256"]
+        );
+    }
+
+    #[test]
+    fn test_id_token_claims_deserialization() {
+        let json = r#"{
+            "iss": "https://auth.example.com",
+            "sub": "user123",
+            "aud": "client_abc",
+            "exp": 9999999999,
+            "iat": 1700000000,
+            "nonce": "test_nonce",
+            "email": "user@example.com",
+            "email_verified": true,
+            "amr": ["pwd", "hwk"],
+            "acr": "aal2"
+        }"#;
+        let claims: IdTokenClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.iss, "https://auth.example.com");
+        assert_eq!(claims.sub, "user123");
+        assert_eq!(claims.email.as_deref(), Some("user@example.com"));
+        assert_eq!(claims.email_verified, Some(true));
+        assert_eq!(claims.amr.as_ref().unwrap().len(), 2);
+        assert_eq!(claims.acr.as_deref(), Some("aal2"));
+        assert_eq!(claims.nonce.as_deref(), Some("test_nonce"));
+    }
+
+    #[test]
+    fn test_id_token_claims_aud_array() {
+        let json = r#"{
+            "iss": "https://auth.example.com",
+            "sub": "user123",
+            "aud": ["client_abc", "client_def"],
+            "exp": 9999999999,
+            "iat": 1700000000
+        }"#;
+        let claims: IdTokenClaims = serde_json::from_str(json).unwrap();
+        assert!(claims.aud.is_array());
+        assert_eq!(claims.aud.as_array().unwrap().len(), 2);
+        assert!(claims.nonce.is_none());
+        assert!(claims.amr.is_none());
+        assert!(claims.email.is_none());
+    }
+
+    #[test]
+    fn test_id_token_claims_minimal() {
+        let json = r#"{
+            "iss": "https://auth.example.com",
+            "sub": "user123",
+            "aud": "client_abc",
+            "exp": 9999999999,
+            "iat": 1700000000
+        }"#;
+        let claims: IdTokenClaims = serde_json::from_str(json).unwrap();
+        assert!(claims.nonce.is_none());
+        assert!(claims.auth_time.is_none());
+        assert!(claims.amr.is_none());
+        assert!(claims.acr.is_none());
+        assert!(claims.name.is_none());
+    }
+
+    #[test]
+    fn test_userinfo_claims_deserialization() {
+        let json = r#"{
+            "sub": "user123",
+            "email": "user@example.com",
+            "email_verified": true,
+            "name": "Test User",
+            "preferred_username": "testuser",
+            "picture": "https://example.com/photo.jpg"
+        }"#;
+        let claims: UserInfoClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.sub, "user123");
+        assert_eq!(claims.email.as_deref(), Some("user@example.com"));
+        assert_eq!(claims.name.as_deref(), Some("Test User"));
+        assert_eq!(claims.preferred_username.as_deref(), Some("testuser"));
+        assert_eq!(
+            claims.picture.as_deref(),
+            Some("https://example.com/photo.jpg")
+        );
+    }
+
+    #[test]
+    fn test_userinfo_claims_minimal() {
+        let json = r#"{"sub": "user123"}"#;
+        let claims: UserInfoClaims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.sub, "user123");
+        assert!(claims.email.is_none());
+        assert!(claims.name.is_none());
+    }
+
+    #[test]
+    fn test_token_response_deserialization() {
+        let json = r#"{
+            "access_token": "at_123",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "id_token": "eyJ...",
+            "refresh_token": "rt_456",
+            "scope": "openid email"
+        }"#;
+        let resp: TokenResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.access_token, "at_123");
+        assert_eq!(resp.token_type, "Bearer");
+        assert_eq!(resp.expires_in, Some(3600));
+        assert_eq!(resp.id_token.as_deref(), Some("eyJ..."));
+        assert_eq!(resp.refresh_token.as_deref(), Some("rt_456"));
+    }
+
+    #[test]
+    fn test_token_error_response_deserialization() {
+        let json = r#"{
+            "error": "invalid_grant",
+            "error_description": "The authorization code has expired"
+        }"#;
+        let err: TokenErrorResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(err.error, "invalid_grant");
+        assert_eq!(
+            err.error_description.as_deref(),
+            Some("The authorization code has expired")
+        );
+    }
+
+    #[test]
+    fn test_rp_client_error_display() {
+        assert_eq!(
+            RpClientError::TokenExpired.to_string(),
+            "token expired"
+        );
+        assert_eq!(
+            RpClientError::InvalidIssuer {
+                expected: "a".into(),
+                got: "b".into()
+            }
+            .to_string(),
+            "invalid issuer: expected a, got b"
+        );
+        assert_eq!(
+            RpClientError::NonceMismatch {
+                expected: "x".into(),
+                got: "y".into()
+            }
+            .to_string(),
+            "nonce mismatch: expected x, got y"
+        );
+    }
+
+    /// Helper to create a test TrustedPeer.
+    fn make_test_peer() -> TrustedPeer {
+        TrustedPeer {
             id: "peer1".to_string(),
             domain: "other.example.com".to_string(),
             issuer_url: "https://other.example.com".to_string(),
@@ -533,19 +758,6 @@ mod tests {
             last_discovery_error: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
-        };
-
-        let url = client
-            .build_authorize_url(&peer, "state123", "nonce456", "challenge789", "http://localhost/callback")
-            .unwrap();
-
-        assert!(url.starts_with("https://other.example.com/authorize?"));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains("client_id=my-client-id"));
-        assert!(url.contains("state=state123"));
-        assert!(url.contains("nonce=nonce456"));
-        assert!(url.contains("code_challenge=challenge789"));
-        assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains("scope=openid+email+profile"));
+        }
     }
 }
