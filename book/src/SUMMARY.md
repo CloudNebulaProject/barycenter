@@ -58,6 +58,14 @@
 - [Authz REST API](authz/rest-api.md)
 - [Configuration and Deployment](authz/configuration.md)
 
+# Federation
+
+- [P2P Federation Overview](federation/overview.md)
+- [Setting Up WebFinger](federation/setting-up-webfingerd.md)
+- [Establishing Peer Trust](federation/peering-guide.md)
+- [Identity Mapping Policies](federation/identity-mapping.md)
+- [Federation Security](federation/security-considerations.md)
+
 # Administration
 
 - [Admin GraphQL API](admin/graphql-api.md)

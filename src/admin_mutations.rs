@@ -6,6 +6,7 @@ use sea_orm::{
 use std::sync::Arc;
 
 use crate::entities;
+use crate::federation;
 use crate::jobs;
 use crate::storage;
 
@@ -31,6 +32,403 @@ impl AdminMutation {
                 success: false,
                 message: format!("Failed to trigger job '{}': {}", job_name, e),
                 job_name,
+            }),
+        }
+    }
+
+    /// Add a trusted federation peer
+    #[graphql(name = "addTrustedPeer")]
+    async fn add_trusted_peer(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer")] domain: String,
+        #[graphql(desc = "Issuer URL of the peer")] issuer_url: String,
+        #[graphql(desc = "OAuth client_id registered at the peer")] client_id: String,
+        #[graphql(desc = "OAuth client_secret registered at the peer")] client_secret: Option<String>,
+        #[graphql(desc = "Pinned JWKS JSON document")] pinned_jwks: Option<String>,
+        #[graphql(desc = "Mapping policy (prompt | auto_link | auto_create)", default_with = "Some(\"prompt\".to_string())")] mapping_policy: Option<String>,
+        #[graphql(desc = "Skip verification and set active immediately")] manual_override: Option<bool>,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let mapping = mapping_policy.unwrap_or_else(|| "prompt".to_string());
+        let manual = manual_override.unwrap_or(false);
+
+        // Create the peer record
+        let peer_id = federation::storage::create_trusted_peer(
+            db.as_ref(),
+            &domain,
+            &issuer_url,
+            &client_id,
+            client_secret.as_deref(),
+            &mapping,
+            "pin_on_first_use",
+        )
+        .await
+        .map_err(|e| Error::new(format!("Failed to create peer: {}", e)))?;
+
+        if manual {
+            // Manual override: set active + manual_override verification level
+            federation::storage::update_trusted_peer_status(db.as_ref(), &peer_id, "active")
+                .await
+                .map_err(|e| Error::new(format!("Failed to update status: {}", e)))?;
+            federation::storage::update_trusted_peer_verification(
+                db.as_ref(),
+                &peer_id,
+                Some("manual_override"),
+                None,
+            )
+            .await
+            .map_err(|e| Error::new(format!("Failed to update verification: {}", e)))?;
+
+            let peer = federation::storage::get_trusted_peer_by_id(db.as_ref(), &peer_id)
+                .await
+                .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+            return Ok(PeerOperationResult {
+                success: true,
+                message: format!("Peer '{}' added with manual override", domain),
+                peer: peer.as_ref().map(TrustedPeerGql::from),
+            });
+        }
+
+        // Run verification
+        match federation::verification::verify_peer(&domain, &issuer_url).await {
+            Ok(result) => {
+                // Update discovery data
+                federation::storage::update_trusted_peer_discovery(
+                    db.as_ref(),
+                    &peer_id,
+                    Some(&result.token_endpoint),
+                    Some(&result.authorization_endpoint),
+                    result.userinfo_endpoint.as_deref(),
+                    Some(&result.jwks_uri),
+                    pinned_jwks.as_deref().or(result.pinned_jwks.as_deref()),
+                )
+                .await
+                .map_err(|e| Error::new(format!("Failed to update discovery: {}", e)))?;
+
+                // Update verification info
+                federation::storage::update_trusted_peer_verification(
+                    db.as_ref(),
+                    &peer_id,
+                    Some(&result.verification_level),
+                    Some(result.webfinger_issuer_match),
+                )
+                .await
+                .map_err(|e| Error::new(format!("Failed to update verification: {}", e)))?;
+
+                // Set active
+                federation::storage::update_trusted_peer_status(db.as_ref(), &peer_id, "active")
+                    .await
+                    .map_err(|e| Error::new(format!("Failed to update status: {}", e)))?;
+
+                let peer = federation::storage::get_trusted_peer_by_id(db.as_ref(), &peer_id)
+                    .await
+                    .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+                Ok(PeerOperationResult {
+                    success: true,
+                    message: format!("Peer '{}' verified and activated", domain),
+                    peer: peer.as_ref().map(TrustedPeerGql::from),
+                })
+            }
+            Err(e) => {
+                // Leave as pending_verification, store error
+                let peer = federation::storage::get_trusted_peer_by_id(db.as_ref(), &peer_id)
+                    .await
+                    .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+                Ok(PeerOperationResult {
+                    success: false,
+                    message: format!("Verification failed: {}", e),
+                    peer: peer.as_ref().map(TrustedPeerGql::from),
+                })
+            }
+        }
+    }
+
+    /// Remove a trusted federation peer
+    #[graphql(name = "removeTrustedPeer")]
+    async fn remove_trusted_peer(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer to remove")] domain: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &domain)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        match peer {
+            Some(p) => {
+                federation::storage::delete_trusted_peer(db.as_ref(), &p.id)
+                    .await
+                    .map_err(|e| Error::new(format!("Failed to delete peer: {}", e)))?;
+
+                Ok(PeerOperationResult {
+                    success: true,
+                    message: format!("Peer '{}' removed", domain),
+                    peer: None,
+                })
+            }
+            None => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Peer '{}' not found", domain),
+                peer: None,
+            }),
+        }
+    }
+
+    /// Suspend a trusted federation peer
+    #[graphql(name = "suspendTrustedPeer")]
+    async fn suspend_trusted_peer(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer to suspend")] domain: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &domain)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        match peer {
+            Some(p) => {
+                federation::storage::update_trusted_peer_status(db.as_ref(), &p.id, "suspended")
+                    .await
+                    .map_err(|e| Error::new(format!("Failed to update status: {}", e)))?;
+
+                let updated = federation::storage::get_trusted_peer_by_id(db.as_ref(), &p.id)
+                    .await
+                    .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+                Ok(PeerOperationResult {
+                    success: true,
+                    message: format!("Peer '{}' suspended", domain),
+                    peer: updated.as_ref().map(TrustedPeerGql::from),
+                })
+            }
+            None => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Peer '{}' not found", domain),
+                peer: None,
+            }),
+        }
+    }
+
+    /// Activate a trusted federation peer (re-runs verification)
+    #[graphql(name = "activateTrustedPeer")]
+    async fn activate_trusted_peer(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer to activate")] domain: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &domain)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        match peer {
+            Some(p) => {
+                match federation::verification::verify_peer(&p.domain, &p.issuer_url).await {
+                    Ok(result) => {
+                        federation::storage::update_trusted_peer_discovery(
+                            db.as_ref(),
+                            &p.id,
+                            Some(&result.token_endpoint),
+                            Some(&result.authorization_endpoint),
+                            result.userinfo_endpoint.as_deref(),
+                            Some(&result.jwks_uri),
+                            result.pinned_jwks.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| Error::new(format!("Failed to update discovery: {}", e)))?;
+
+                        federation::storage::update_trusted_peer_verification(
+                            db.as_ref(),
+                            &p.id,
+                            Some(&result.verification_level),
+                            Some(result.webfinger_issuer_match),
+                        )
+                        .await
+                        .map_err(|e| {
+                            Error::new(format!("Failed to update verification: {}", e))
+                        })?;
+
+                        federation::storage::update_trusted_peer_status(
+                            db.as_ref(),
+                            &p.id,
+                            "active",
+                        )
+                        .await
+                        .map_err(|e| Error::new(format!("Failed to update status: {}", e)))?;
+
+                        let updated =
+                            federation::storage::get_trusted_peer_by_id(db.as_ref(), &p.id)
+                                .await
+                                .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+                        Ok(PeerOperationResult {
+                            success: true,
+                            message: format!("Peer '{}' verified and activated", domain),
+                            peer: updated.as_ref().map(TrustedPeerGql::from),
+                        })
+                    }
+                    Err(e) => Ok(PeerOperationResult {
+                        success: false,
+                        message: format!("Verification failed: {}", e),
+                        peer: Some(TrustedPeerGql::from(&p)),
+                    }),
+                }
+            }
+            None => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Peer '{}' not found", domain),
+                peer: None,
+            }),
+        }
+    }
+
+    /// Refresh discovery data for a trusted peer
+    #[graphql(name = "refreshPeerDiscovery")]
+    async fn refresh_peer_discovery(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer")] domain: String,
+        #[graphql(desc = "Update pinned JWKS from fresh fetch")] update_pin: Option<bool>,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &domain)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        match peer {
+            Some(p) => {
+                match federation::verification::verify_peer(&p.domain, &p.issuer_url).await {
+                    Ok(result) => {
+                        let pin_jwks = if update_pin.unwrap_or(false) {
+                            result.pinned_jwks.as_deref()
+                        } else {
+                            // Keep existing pin
+                            None
+                        };
+
+                        federation::storage::update_trusted_peer_discovery(
+                            db.as_ref(),
+                            &p.id,
+                            Some(&result.token_endpoint),
+                            Some(&result.authorization_endpoint),
+                            result.userinfo_endpoint.as_deref(),
+                            Some(&result.jwks_uri),
+                            pin_jwks,
+                        )
+                        .await
+                        .map_err(|e| Error::new(format!("Failed to update discovery: {}", e)))?;
+
+                        let updated =
+                            federation::storage::get_trusted_peer_by_id(db.as_ref(), &p.id)
+                                .await
+                                .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+                        Ok(PeerOperationResult {
+                            success: true,
+                            message: format!("Discovery refreshed for peer '{}'", domain),
+                            peer: updated.as_ref().map(TrustedPeerGql::from),
+                        })
+                    }
+                    Err(e) => Ok(PeerOperationResult {
+                        success: false,
+                        message: format!("Discovery refresh failed: {}", e),
+                        peer: Some(TrustedPeerGql::from(&p)),
+                    }),
+                }
+            }
+            None => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Peer '{}' not found", domain),
+                peer: None,
+            }),
+        }
+    }
+
+    /// Re-verify a trusted peer (updates verification level)
+    #[graphql(name = "reverifyPeer")]
+    async fn reverify_peer(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer")] domain: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &domain)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        match peer {
+            Some(p) => {
+                match federation::verification::verify_peer(&p.domain, &p.issuer_url).await {
+                    Ok(result) => {
+                        federation::storage::update_trusted_peer_discovery(
+                            db.as_ref(),
+                            &p.id,
+                            Some(&result.token_endpoint),
+                            Some(&result.authorization_endpoint),
+                            result.userinfo_endpoint.as_deref(),
+                            Some(&result.jwks_uri),
+                            result.pinned_jwks.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| Error::new(format!("Failed to update discovery: {}", e)))?;
+
+                        federation::storage::update_trusted_peer_verification(
+                            db.as_ref(),
+                            &p.id,
+                            Some(&result.verification_level),
+                            Some(result.webfinger_issuer_match),
+                        )
+                        .await
+                        .map_err(|e| {
+                            Error::new(format!("Failed to update verification: {}", e))
+                        })?;
+
+                        let updated =
+                            federation::storage::get_trusted_peer_by_id(db.as_ref(), &p.id)
+                                .await
+                                .map_err(|e| Error::new(format!("Failed to fetch peer: {}", e)))?;
+
+                        Ok(PeerOperationResult {
+                            success: true,
+                            message: format!("Peer '{}' re-verified (level: {})", domain, result.verification_level),
+                            peer: updated.as_ref().map(TrustedPeerGql::from),
+                        })
+                    }
+                    Err(e) => Ok(PeerOperationResult {
+                        success: false,
+                        message: format!("Re-verification failed: {}", e),
+                        peer: Some(TrustedPeerGql::from(&p)),
+                    }),
+                }
+            }
+            None => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Peer '{}' not found", domain),
+                peer: None,
             }),
         }
     }
@@ -177,7 +575,98 @@ impl AdminQuery {
                 description: "Clean up expired device authorization codes".to_string(),
                 schedule: "Hourly at :45".to_string(),
             },
+            JobInfo {
+                name: "cleanup_expired_federation_requests".to_string(),
+                description: "Clean up expired federation auth requests".to_string(),
+                schedule: "Every 5 minutes".to_string(),
+            },
+            JobInfo {
+                name: "refresh_peer_discovery".to_string(),
+                description: "Re-verify active trusted peers and refresh discovery endpoints"
+                    .to_string(),
+                schedule: "Daily at 03:00".to_string(),
+            },
         ])
+    }
+
+    /// List all trusted federation peers
+    #[graphql(name = "trustedPeers")]
+    async fn trusted_peers(&self, ctx: &Context<'_>) -> Result<Vec<TrustedPeerGql>> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peers = federation::storage::list_trusted_peers(db.as_ref())
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        Ok(peers.iter().map(TrustedPeerGql::from).collect())
+    }
+
+    /// Get a single trusted peer by domain
+    #[graphql(name = "trustedPeer")]
+    async fn trusted_peer(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Domain of the peer")] domain: String,
+    ) -> Result<Option<TrustedPeerGql>> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &domain)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        Ok(peer.as_ref().map(TrustedPeerGql::from))
+    }
+
+    /// List federated identities for a user
+    #[graphql(name = "federatedIdentities")]
+    async fn federated_identities(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Username to query")] username: String,
+    ) -> Result<Vec<FederatedIdentityGql>> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        // Look up user by username to get their subject/ID
+        let user = storage::get_user_by_username(db.as_ref(), &username)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?
+            .ok_or_else(|| Error::new(format!("User '{}' not found", username)))?;
+
+        let identities =
+            federation::storage::list_federated_identities_for_user(db.as_ref(), &user.subject)
+                .await
+                .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        // For each identity, look up the peer domain from peer_id
+        let mut results = Vec::with_capacity(identities.len());
+        for ident in &identities {
+            let peer_domain =
+                match federation::storage::get_trusted_peer_by_id(db.as_ref(), &ident.peer_id)
+                    .await
+                {
+                    Ok(Some(p)) => p.domain,
+                    _ => ident.peer_id.clone(), // fallback to peer_id if lookup fails
+                };
+
+            results.push(FederatedIdentityGql {
+                id: ident.id.clone(),
+                local_user_id: ident.local_user_id.clone(),
+                peer_domain,
+                external_subject: ident.external_subject.clone(),
+                external_issuer: ident.external_issuer.clone(),
+                external_email: ident.external_email.clone(),
+                linked_at: ident.linked_at.clone(),
+                last_login_at: ident.last_login_at.clone(),
+            });
+        }
+
+        Ok(results)
     }
 
     /// Get 2FA status for a user
@@ -241,4 +730,64 @@ pub struct User2FAStatus {
     pub passkey_enrolled: bool,
     pub passkey_count: i32,
     pub passkey_enrolled_at: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// Federation GraphQL types
+// ---------------------------------------------------------------------------
+
+#[derive(SimpleObject, Clone)]
+pub struct TrustedPeerGql {
+    pub domain: String,
+    pub issuer_url: String,
+    pub status: String,
+    pub verification_level: Option<String>,
+    pub verified_at: Option<String>,
+    pub webfinger_issuer_match: Option<bool>,
+    pub mapping_policy: String,
+    pub trust_peer_acr: bool,
+    pub jwks_pin_mode: String,
+    pub scopes: String,
+    pub last_discovery_refresh: Option<String>,
+    pub last_discovery_error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(SimpleObject)]
+pub struct FederatedIdentityGql {
+    pub id: String,
+    pub local_user_id: String,
+    pub peer_domain: String,
+    pub external_subject: String,
+    pub external_issuer: String,
+    pub external_email: Option<String>,
+    pub linked_at: String,
+    pub last_login_at: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct PeerOperationResult {
+    pub success: bool,
+    pub message: String,
+    pub peer: Option<TrustedPeerGql>,
+}
+
+impl From<&federation::storage::TrustedPeer> for TrustedPeerGql {
+    fn from(p: &federation::storage::TrustedPeer) -> Self {
+        Self {
+            domain: p.domain.clone(),
+            issuer_url: p.issuer_url.clone(),
+            status: p.status.clone(),
+            verification_level: p.verification_level.clone(),
+            verified_at: p.verified_at.clone(),
+            webfinger_issuer_match: p.webfinger_issuer_match,
+            mapping_policy: p.mapping_policy.clone(),
+            trust_peer_acr: p.trust_peer_acr,
+            jwks_pin_mode: p.jwks_pin_mode.clone(),
+            scopes: p.scopes.clone(),
+            last_discovery_refresh: p.last_discovery_refresh.clone(),
+            last_discovery_error: p.last_discovery_error.clone(),
+            created_at: p.created_at.clone(),
+        }
+    }
 }

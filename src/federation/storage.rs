@@ -290,6 +290,27 @@ pub async fn update_trusted_peer_verification(
     Ok(())
 }
 
+pub async fn update_trusted_peer_discovery_error(
+    db: &DatabaseConnection,
+    id: &str,
+    error_message: &str,
+) -> Result<(), CrabError> {
+    use entities::trusted_peer::{Column, Entity};
+
+    if let Some(peer) = Entity::find()
+        .filter(Column::Id.eq(id))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::trusted_peer::ActiveModel = peer.into();
+        active.last_discovery_error = Set(Some(error_message.to_string()));
+        active.updated_at = Set(now_iso());
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
 pub async fn get_trusted_peer_by_id(
     db: &DatabaseConnection,
     id: &str,

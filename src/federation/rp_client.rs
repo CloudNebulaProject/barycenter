@@ -271,11 +271,18 @@ impl OidcRpClient {
         peer: &TrustedPeer,
         expected_nonce: &str,
     ) -> Result<IdTokenClaims, RpClientError> {
-        // We need the peer's JWKS to verify the signature.
+        // Resolve JWKS based on the peer's pin mode.
+        // - pin_on_first_use / pin_explicit: use pinned_jwks (must exist)
+        // - trust_discovery: pinned_jwks is optional; if missing, caller should
+        //   have fetched live JWKS before calling this method. We still require
+        //   the keys to be passed via pinned_jwks field.
         let jwks_json = peer.pinned_jwks.as_deref().ok_or_else(|| {
-            RpClientError::TokenValidationFailed(
-                "peer has no pinned_jwks – keys needed for verification".to_string(),
-            )
+            let mode = &peer.jwks_pin_mode;
+            RpClientError::TokenValidationFailed(format!(
+                "peer has no pinned_jwks (jwks_pin_mode={}) – keys needed for token verification. \
+                 Use refreshPeerDiscovery to fetch and pin the peer's keys.",
+                mode
+            ))
         })?;
 
         let jwks: serde_json::Value = serde_json::from_str(jwks_json).map_err(|e| {
@@ -379,6 +386,23 @@ impl OidcRpClient {
         let now = chrono::Utc::now().timestamp();
         if claims.exp <= now {
             return Err(RpClientError::TokenExpired);
+        }
+
+        // -- Validate iat freshness (must be within last 10 minutes) --
+        let max_iat_age_secs = 600; // 10 minutes
+        if now - claims.iat > max_iat_age_secs {
+            return Err(RpClientError::TokenValidationFailed(format!(
+                "ID token iat is too old: issued {}s ago (max {}s)",
+                now - claims.iat,
+                max_iat_age_secs
+            )));
+        }
+        if claims.iat > now + 60 {
+            // Allow 60s clock skew into the future
+            return Err(RpClientError::TokenValidationFailed(format!(
+                "ID token iat is in the future: {}s ahead",
+                claims.iat - now
+            )));
         }
 
         // -- Validate nonce --

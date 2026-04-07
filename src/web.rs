@@ -4163,6 +4163,24 @@ async fn federation_callback(
         _ => return (StatusCode::BAD_REQUEST, "Peer IdP is no longer trusted").into_response(),
     };
 
+    // Enforce minimum verification level
+    let min_level = &state.settings.federation.min_verification_level;
+    if min_level == "entity_proof" {
+        let peer_level = peer.verification_level.as_deref().unwrap_or("none");
+        if peer_level != "entity_proof" {
+            tracing::warn!(
+                peer_domain = %peer.domain,
+                peer_level = %peer_level,
+                required_level = %min_level,
+                "Peer does not meet minimum verification level"
+            );
+            return (StatusCode::FORBIDDEN, format!(
+                "Peer {} does not meet minimum verification level (has: {}, required: entity_proof)",
+                peer.domain, peer_level
+            )).into_response();
+        }
+    }
+
     // Exchange code for tokens at the peer's token endpoint
     let rp_client = OidcRpClient::new();
     let callback_uri = format!("{}/federation/callback", state.settings.issuer());
