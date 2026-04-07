@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use crate::entities;
 use crate::federation;
+use crate::jwks::JwksManager;
 use crate::jobs;
+use crate::settings::Settings;
 use crate::storage;
 
 /// Custom mutations for admin operations
@@ -478,6 +480,157 @@ impl AdminMutation {
             requires_2fa: required,
         })
     }
+
+    /// Initiate mutual peering with a remote peer.
+    ///
+    /// This auto-registers at the peer's /connect/register, then sends
+    /// a signed peer-request JWS. The local peer is stored with status
+    /// `pending_mutual` until the remote admin approves.
+    #[graphql(name = "initiatePeering")]
+    async fn initiate_peering(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Issuer URL of the remote peer")] peer_issuer_url: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+        let jwks = ctx
+            .data::<JwksManager>()
+            .map_err(|_| Error::new("JwksManager not available"))?;
+        let settings = ctx
+            .data::<Arc<Settings>>()
+            .map_err(|_| Error::new("Settings not available"))?;
+
+        if !settings.federation.enabled {
+            return Ok(PeerOperationResult {
+                success: false,
+                message: "Federation is not enabled".to_string(),
+                peer: None,
+            });
+        }
+
+        match federation::peering::initiate_peering(db.as_ref(), jwks, settings.as_ref(), &peer_issuer_url).await {
+            Ok(result) => {
+                let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &result.peer_domain)
+                    .await
+                    .ok()
+                    .flatten();
+
+                Ok(PeerOperationResult {
+                    success: true,
+                    message: format!(
+                        "Peering initiated with {}. Status: {}. Waiting for remote admin approval.",
+                        result.peer_domain, result.status
+                    ),
+                    peer: peer.as_ref().map(TrustedPeerGql::from),
+                })
+            }
+            Err(e) => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Failed to initiate peering: {}", e),
+                peer: None,
+            }),
+        }
+    }
+
+    /// Approve an incoming peer request.
+    ///
+    /// This auto-registers at the requester's /connect/register, creates
+    /// a trusted peer with status `active`, and sends a signed peer-confirm.
+    #[graphql(name = "approvePeerRequest")]
+    async fn approve_peer_request(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "ID of the peer request to approve")] request_id: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+        let jwks = ctx
+            .data::<JwksManager>()
+            .map_err(|_| Error::new("JwksManager not available"))?;
+        let settings = ctx
+            .data::<Arc<Settings>>()
+            .map_err(|_| Error::new("Settings not available"))?;
+
+        if !settings.federation.enabled {
+            return Ok(PeerOperationResult {
+                success: false,
+                message: "Federation is not enabled".to_string(),
+                peer: None,
+            });
+        }
+
+        match federation::peering::approve_peer_request(db.as_ref(), jwks, settings.as_ref(), &request_id).await {
+            Ok(result) => {
+                let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &result.peer_domain)
+                    .await
+                    .ok()
+                    .flatten();
+
+                Ok(PeerOperationResult {
+                    success: true,
+                    message: format!(
+                        "Peer request approved. {} is now an active peer.",
+                        result.peer_domain
+                    ),
+                    peer: peer.as_ref().map(TrustedPeerGql::from),
+                })
+            }
+            Err(e) => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Failed to approve peer request: {}", e),
+                peer: None,
+            }),
+        }
+    }
+
+    /// Reject an incoming peer request.
+    #[graphql(name = "rejectPeerRequest")]
+    async fn reject_peer_request(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "ID of the peer request to reject")] request_id: String,
+    ) -> Result<PeerOperationResult> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let request = federation::storage::get_peer_request(db.as_ref(), &request_id)
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        match request {
+            Some(req) if req.status == "pending_approval" => {
+                federation::storage::update_peer_request_status(db.as_ref(), &request_id, "rejected")
+                    .await
+                    .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+                Ok(PeerOperationResult {
+                    success: true,
+                    message: format!(
+                        "Peer request from {} rejected",
+                        req.requesting_domain
+                    ),
+                    peer: None,
+                })
+            }
+            Some(req) => Ok(PeerOperationResult {
+                success: false,
+                message: format!(
+                    "Cannot reject request with status '{}'",
+                    req.status
+                ),
+                peer: None,
+            }),
+            None => Ok(PeerOperationResult {
+                success: false,
+                message: format!("Peer request '{}' not found", request_id),
+                peer: None,
+            }),
+        }
+    }
 }
 
 /// Result of triggering a job
@@ -669,6 +822,20 @@ impl AdminQuery {
         Ok(results)
     }
 
+    /// List incoming peer requests that are pending approval
+    #[graphql(name = "pendingPeerRequests")]
+    async fn pending_peer_requests(&self, ctx: &Context<'_>) -> Result<Vec<PeerRequestGql>> {
+        let db = ctx
+            .data::<Arc<DatabaseConnection>>()
+            .map_err(|_| Error::new("Database connection not available"))?;
+
+        let requests = federation::storage::list_pending_peer_requests(db.as_ref())
+            .await
+            .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+
+        Ok(requests.iter().map(PeerRequestGql::from).collect())
+    }
+
     /// Get 2FA status for a user
     async fn user_2fa_status(
         &self,
@@ -770,6 +937,31 @@ pub struct PeerOperationResult {
     pub success: bool,
     pub message: String,
     pub peer: Option<TrustedPeerGql>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PeerRequestGql {
+    pub id: String,
+    pub requesting_issuer: String,
+    pub requesting_domain: String,
+    pub client_id_at_us: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+impl From<&federation::storage::PeerRequest> for PeerRequestGql {
+    fn from(r: &federation::storage::PeerRequest) -> Self {
+        Self {
+            id: r.id.clone(),
+            requesting_issuer: r.requesting_issuer.clone(),
+            requesting_domain: r.requesting_domain.clone(),
+            client_id_at_us: r.client_id_at_us.clone(),
+            status: r.status.clone(),
+            created_at: r.created_at.clone(),
+            expires_at: r.expires_at.clone(),
+        }
+    }
 }
 
 impl From<&federation::storage::TrustedPeer> for TrustedPeerGql {

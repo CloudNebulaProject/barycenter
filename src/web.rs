@@ -203,6 +203,8 @@ pub async fn serve(
         .route("/federation/trust-anchors", get(trust_anchors))
         .route("/.well-known/barycenter-entity", get(crate::federation::entity_proof::entity_proof))
         .route("/federation/callback", get(federation_callback))
+        .route("/federation/peer-request", post(federation_peer_request))
+        .route("/federation/peer-confirm", post(federation_peer_confirm))
         .route("/login", get(login_page).post(login_submit))
         .route("/login/2fa", get(login_2fa_page))
         .route("/logout", get(logout))
@@ -4316,4 +4318,85 @@ async fn federation_callback(
         HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static("")),
     );
     response
+}
+
+// ---------------------------------------------------------------------------
+// Federation peer-request / peer-confirm endpoints
+// ---------------------------------------------------------------------------
+
+/// POST /federation/peer-request
+///
+/// Receives a signed JWS from a remote peer requesting mutual peering.
+/// The JWS is verified against the sender's published JWKS and stored
+/// as a `pending_approval` peer request for admin review.
+async fn federation_peer_request(
+    State(state): State<AppState>,
+    body: String,
+) -> impl IntoResponse {
+    if !state.settings.federation.enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "federation not enabled"})),
+        )
+            .into_response();
+    }
+
+    match crate::federation::peering::handle_peer_request(
+        &state.db,
+        &state.jwks,
+        &state.settings,
+        &body,
+    )
+    .await
+    {
+        Ok(result) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "pending_approval",
+                "request_id": result.request_id,
+                "requesting_domain": result.requesting_domain,
+                "requesting_issuer": result.requesting_issuer,
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!("peer-request rejected: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /federation/peer-confirm
+///
+/// Receives a signed JWS from a remote peer confirming that they have
+/// approved our peering request. Verifies the signature, looks up our
+/// pending_mutual peer, and activates it.
+async fn federation_peer_confirm(
+    State(state): State<AppState>,
+    body: String,
+) -> impl IntoResponse {
+    if !state.settings.federation.enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "federation not enabled"})),
+        )
+            .into_response();
+    }
+
+    match crate::federation::peering::handle_peer_confirm(&state.db, &state.settings, &body).await
+    {
+        Ok(()) => (StatusCode::OK, Json(json!({"status": "confirmed"}))).into_response(),
+        Err(e) => {
+            tracing::warn!("peer-confirm rejected: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
 }

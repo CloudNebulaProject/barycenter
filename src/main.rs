@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
 
             // build admin GraphQL schemas
             let seaography_schema = admin_graphql::build_seaography_schema(db.clone());
-            let jobs_schema = admin_graphql::build_jobs_schema(db.clone());
+            let jobs_schema = admin_graphql::build_jobs_schema(db.clone(), jwks_mgr.clone(), settings.clone());
 
             // init and start background job scheduler
             let _scheduler = jobs::init_scheduler(db.clone()).await?;

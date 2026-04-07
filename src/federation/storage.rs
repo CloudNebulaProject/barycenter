@@ -61,6 +61,19 @@ pub struct FederationAuthRequest {
     pub expires_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerRequest {
+    pub id: String,
+    pub requesting_issuer: String,
+    pub requesting_domain: String,
+    pub client_id_at_us: String,
+    pub callback_endpoint: String,
+    pub request_jws: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
 // ---------------------------------------------------------------------------
 // Conversions from entity models
 // ---------------------------------------------------------------------------
@@ -120,6 +133,22 @@ impl From<entities::federation_auth_request::Model> for FederationAuthRequest {
             pkce_verifier: m.pkce_verifier,
             original_authorize_params: m.original_authorize_params,
             original_session_id: m.original_session_id,
+            created_at: m.created_at,
+            expires_at: m.expires_at,
+        }
+    }
+}
+
+impl From<entities::peer_request::Model> for PeerRequest {
+    fn from(m: entities::peer_request::Model) -> Self {
+        Self {
+            id: m.id,
+            requesting_issuer: m.requesting_issuer,
+            requesting_domain: m.requesting_domain,
+            client_id_at_us: m.client_id_at_us,
+            callback_endpoint: m.callback_endpoint,
+            request_jws: m.request_jws,
+            status: m.status,
             created_at: m.created_at,
             expires_at: m.expires_at,
         }
@@ -487,6 +516,118 @@ pub async fn cleanup_expired_federation_requests(
     let now = now_iso();
     let result = Entity::delete_many()
         .filter(Column::ExpiresAt.lt(now))
+        .exec(db)
+        .await?;
+
+    Ok(result.rows_affected)
+}
+
+// ---------------------------------------------------------------------------
+// trusted_peers: lookup by issuer_url
+// ---------------------------------------------------------------------------
+
+pub async fn get_trusted_peer_by_issuer_url(
+    db: &DatabaseConnection,
+    issuer_url: &str,
+) -> Result<Option<TrustedPeer>, CrabError> {
+    use entities::trusted_peer::{Column, Entity};
+
+    let peer = Entity::find()
+        .filter(Column::IssuerUrl.eq(issuer_url))
+        .one(db)
+        .await?;
+
+    Ok(peer.map(TrustedPeer::from))
+}
+
+// ---------------------------------------------------------------------------
+// peer_requests CRUD
+// ---------------------------------------------------------------------------
+
+pub async fn create_peer_request(
+    db: &DatabaseConnection,
+    requesting_issuer: &str,
+    requesting_domain: &str,
+    client_id_at_us: &str,
+    callback_endpoint: &str,
+    request_jws: &str,
+    expires_at: &str,
+) -> Result<String, CrabError> {
+    let id = random_id();
+    let now = now_iso();
+
+    let model = entities::peer_request::ActiveModel {
+        id: Set(id.clone()),
+        requesting_issuer: Set(requesting_issuer.to_string()),
+        requesting_domain: Set(requesting_domain.to_string()),
+        client_id_at_us: Set(client_id_at_us.to_string()),
+        callback_endpoint: Set(callback_endpoint.to_string()),
+        request_jws: Set(request_jws.to_string()),
+        status: Set("pending_approval".to_string()),
+        created_at: Set(now),
+        expires_at: Set(expires_at.to_string()),
+    };
+
+    model.insert(db).await?;
+    Ok(id)
+}
+
+pub async fn get_peer_request(
+    db: &DatabaseConnection,
+    id: &str,
+) -> Result<Option<PeerRequest>, CrabError> {
+    use entities::peer_request::{Column, Entity};
+
+    let model = Entity::find()
+        .filter(Column::Id.eq(id))
+        .one(db)
+        .await?;
+
+    Ok(model.map(PeerRequest::from))
+}
+
+pub async fn list_pending_peer_requests(
+    db: &DatabaseConnection,
+) -> Result<Vec<PeerRequest>, CrabError> {
+    use entities::peer_request::{Column, Entity};
+
+    let models = Entity::find()
+        .filter(Column::Status.eq("pending_approval"))
+        .all(db)
+        .await?;
+
+    Ok(models.into_iter().map(PeerRequest::from).collect())
+}
+
+pub async fn update_peer_request_status(
+    db: &DatabaseConnection,
+    id: &str,
+    status: &str,
+) -> Result<(), CrabError> {
+    use entities::peer_request::{Column, Entity};
+
+    if let Some(req) = Entity::find()
+        .filter(Column::Id.eq(id))
+        .one(db)
+        .await?
+    {
+        let mut active: entities::peer_request::ActiveModel = req.into();
+        active.status = Set(status.to_string());
+        active.update(db).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn cleanup_expired_peer_requests(
+    db: &DatabaseConnection,
+) -> Result<u64, CrabError> {
+    use entities::peer_request::{Column, Entity};
+
+    let now = now_iso();
+    let result = Entity::delete_many()
+        .filter(Column::ExpiresAt.lt(now))
+        .filter(Column::Status.eq("pending_approval"))
         .exec(db)
         .await?;
 

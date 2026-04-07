@@ -7,6 +7,7 @@ mod m20250108_000001_add_consent_table;
 mod m20250109_000001_add_device_codes;
 mod m20250222_000001_rename_device_code_table;
 mod m20260407_000001_create_federation_tables;
+mod m20260407_000002_create_peer_requests;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250109_000001_add_device_codes::Migration),
             Box::new(m20250222_000001_rename_device_code_table::Migration),
             Box::new(m20260407_000001_create_federation_tables::Migration),
+            Box::new(m20260407_000002_create_peer_requests::Migration),
         ]
     }
 }

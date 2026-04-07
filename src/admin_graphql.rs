@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use crate::admin_mutations::{AdminMutation, AdminQuery};
 use crate::entities;
+use crate::jwks::JwksManager;
+use crate::settings::Settings;
 
 /// Initialize the Seaography admin GraphQL schema with all entities
 pub fn build_seaography_schema(db: DatabaseConnection) -> DynamicSchema {
@@ -39,9 +41,13 @@ pub fn build_seaography_schema(db: DatabaseConnection) -> DynamicSchema {
 /// Build custom job management GraphQL schema
 pub fn build_jobs_schema(
     db: DatabaseConnection,
+    jwks: JwksManager,
+    settings: Settings,
 ) -> async_graphql::Schema<AdminQuery, AdminMutation, EmptySubscription> {
     async_graphql::Schema::build(AdminQuery, AdminMutation, EmptySubscription)
         .data(Arc::new(db))
+        .data(jwks)
+        .data(Arc::new(settings))
         .finish()
 }
 
