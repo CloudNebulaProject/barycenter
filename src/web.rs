@@ -201,6 +201,8 @@ pub async fn serve(
             get(get_property).put(set_property),
         )
         .route("/federation/trust-anchors", get(trust_anchors))
+        .route("/.well-known/barycenter-entity", get(crate::federation::entity_proof::entity_proof))
+        .route("/federation/callback", get(federation_callback))
         .route("/login", get(login_page).post(login_submit))
         .route("/login/2fa", get(login_2fa_page))
         .route("/logout", get(logout))
@@ -369,6 +371,9 @@ struct AuthorizeQuery {
     claims_locales: Option<String>,
     max_age: Option<String>,
     acr_values: Option<String>,
+    /// OIDC login_hint — if this contains user@domain where domain is a trusted peer,
+    /// Barycenter can redirect directly to the peer IdP for federated login.
+    login_hint: Option<String>,
 }
 
 fn url_append_query(mut base: String, params: &[(&str, String)]) -> String {
@@ -584,6 +589,20 @@ async fn authorize(
             }
             if let Some(acr) = &q.acr_values {
                 return_params.push(("acr_values", acr.clone()));
+            }
+            if let Some(lh) = &q.login_hint {
+                return_params.push(("login_hint", lh.clone()));
+            }
+
+            // --- Federation: check if login_hint points to a trusted peer ---
+            if state.settings.federation.enabled {
+                if let Some(ref login_hint) = q.login_hint {
+                    if let Some(redirect) = try_federated_redirect(
+                        &state, login_hint, &q, &code_challenge, &ccm,
+                    ).await {
+                        return redirect.into_response();
+                    }
+                }
             }
 
             let return_to = url_append_query(
@@ -3956,4 +3975,327 @@ async fn device_consent(
                 .to_string(),
         ))
     }
+}
+
+// =============================================================================
+// Federation: P2P identity brokering
+// =============================================================================
+
+/// Try to redirect to a federated peer based on the login_hint domain.
+/// Returns Some(Response) if a trusted peer is found, None otherwise.
+async fn try_federated_redirect(
+    state: &AppState,
+    login_hint: &str,
+    q: &AuthorizeQuery,
+    code_challenge: &str,
+    code_challenge_method: &str,
+) -> Option<axum::response::Response> {
+    use crate::federation::{rp_client::OidcRpClient, storage as fed_storage, webfinger::WebFingerClient};
+
+    let domain = match WebFingerClient::extract_domain(login_hint) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+
+    // Check if it's a local domain (not federated)
+    let local_domain = &state.settings.webfinger.resource_domain;
+    if !local_domain.is_empty() && domain == *local_domain {
+        return None;
+    }
+
+    // Look up trusted peer by domain
+    let peer = match fed_storage::get_active_trusted_peer_by_domain(&state.db, &domain).await {
+        Ok(Some(p)) => p,
+        _ => {
+            // If webfinger is enabled, try to discover the issuer and match against peers
+            if state.settings.webfinger.enabled {
+                let wf_client = WebFingerClient::new();
+                if let Ok(issuer) = wf_client.discover_issuer(login_hint).await {
+                    if let Ok(peers) = fed_storage::list_trusted_peers(&state.db).await {
+                        if let Some(p) = peers.into_iter().find(|p| p.issuer_url == issuer && p.status == "active") {
+                            p
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+    };
+
+    // Ensure peer has required endpoints
+    let auth_endpoint = match &peer.authorization_endpoint {
+        Some(ep) if !ep.is_empty() => ep.clone(),
+        _ => return None,
+    };
+
+    // Generate PKCE for the peer flow
+    let (pkce_verifier, pkce_challenge) = OidcRpClient::generate_pkce();
+
+    // Generate state and nonce for the peer flow
+    let fed_state = storage::random_id();
+    let fed_nonce = storage::random_id();
+
+    // Build the original authorize params to replay after callback
+    let original_params = serde_json::json!({
+        "client_id": q.client_id,
+        "redirect_uri": q.redirect_uri,
+        "response_type": q.response_type,
+        "scope": q.scope,
+        "state": q.state,
+        "nonce": q.nonce,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+        "prompt": q.prompt,
+        "login_hint": q.login_hint,
+        "max_age": q.max_age,
+        "acr_values": q.acr_values,
+    });
+
+    // Store federation auth request (10 minute TTL)
+    let expires_at = chrono::Utc::now().timestamp() + 600;
+    let expires_at_str = chrono::DateTime::from_timestamp(expires_at, 0)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default();
+
+    if let Err(e) = fed_storage::create_federation_auth_request(
+        &state.db,
+        &peer.id,
+        &fed_state,
+        &fed_nonce,
+        &pkce_verifier,
+        &original_params.to_string(),
+        None,
+        &expires_at_str,
+    )
+    .await
+    {
+        tracing::warn!("Failed to create federation auth request: {}", e);
+        return None;
+    }
+
+    // Build redirect URL to the peer's authorize endpoint
+    let callback_uri = format!("{}/federation/callback", state.settings.issuer());
+    let scopes = if peer.scopes.is_empty() { "openid email profile" } else { &peer.scopes };
+    let mut redirect_url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+        auth_endpoint,
+        urlencoding::encode(&peer.client_id),
+        urlencoding::encode(&callback_uri),
+        urlencoding::encode(scopes),
+        urlencoding::encode(&fed_state),
+        urlencoding::encode(&fed_nonce),
+        urlencoding::encode(&pkce_challenge),
+    );
+
+    // Forward login_hint to the peer
+    redirect_url.push_str(&format!("&login_hint={}", urlencoding::encode(login_hint)));
+
+    tracing::info!(
+        peer_domain = %peer.domain,
+        login_hint = %login_hint,
+        "Redirecting to federated peer for authentication"
+    );
+
+    Some(Redirect::temporary(&redirect_url).into_response())
+}
+
+/// Federation callback query parameters (returned by the peer IdP).
+#[derive(Debug, Deserialize)]
+struct FederationCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// Handle the federation callback from a peer IdP.
+async fn federation_callback(
+    State(state): State<AppState>,
+    Query(q): Query<FederationCallbackQuery>,
+) -> impl IntoResponse {
+    use crate::federation::{identity, rp_client::OidcRpClient, storage as fed_storage};
+
+    // Handle error responses from the peer
+    if let Some(error) = &q.error {
+        let desc = q.error_description.as_deref().unwrap_or("unknown error");
+        tracing::warn!(error = %error, description = %desc, "Peer IdP returned error");
+        return (StatusCode::BAD_REQUEST, format!("Federated login failed: {} - {}", error, desc)).into_response();
+    }
+
+    let fed_state = match &q.state {
+        Some(s) => s.as_str(),
+        None => return (StatusCode::BAD_REQUEST, "Missing state parameter").into_response(),
+    };
+    let code = match &q.code {
+        Some(c) => c.as_str(),
+        None => return (StatusCode::BAD_REQUEST, "Missing code parameter").into_response(),
+    };
+
+    // Look up the federation auth request by state
+    let fed_req = match fed_storage::get_federation_auth_request_by_state(&state.db, fed_state).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::BAD_REQUEST, "Invalid or expired federation state").into_response(),
+        Err(e) => {
+            tracing::error!("DB error looking up federation request: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+        }
+    };
+
+    // Check expiry
+    if let Ok(expires) = chrono::NaiveDateTime::parse_from_str(&fed_req.expires_at, "%Y-%m-%dT%H:%M:%SZ") {
+        let expires_utc = expires.and_utc();
+        if chrono::Utc::now() > expires_utc {
+            let _ = fed_storage::delete_federation_auth_request(&state.db, &fed_req.id).await;
+            return (StatusCode::BAD_REQUEST, "Federation request expired — please try again").into_response();
+        }
+    }
+
+    // Look up the peer
+    let peer = match fed_storage::get_trusted_peer_by_id(&state.db, &fed_req.peer_id).await {
+        Ok(Some(p)) if p.status == "active" => p,
+        _ => return (StatusCode::BAD_REQUEST, "Peer IdP is no longer trusted").into_response(),
+    };
+
+    // Exchange code for tokens at the peer's token endpoint
+    let rp_client = OidcRpClient::new();
+    let callback_uri = format!("{}/federation/callback", state.settings.issuer());
+
+    let token_resp = match rp_client.exchange_code(&peer, code, &fed_req.pkce_verifier, &callback_uri).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Token exchange with peer failed: {}", e);
+            return (StatusCode::BAD_GATEWAY, format!("Failed to exchange code with peer: {}", e)).into_response();
+        }
+    };
+
+    // Validate ID token
+    let id_token_jwt = match &token_resp.id_token {
+        Some(t) => t.as_str(),
+        None => return (StatusCode::BAD_GATEWAY, "Peer did not return an ID token").into_response(),
+    };
+
+    let claims = match rp_client.validate_id_token(id_token_jwt, &peer, &fed_req.nonce) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("ID token validation failed: {}", e);
+            return (StatusCode::BAD_GATEWAY, format!("Invalid ID token from peer: {}", e)).into_response();
+        }
+    };
+
+    // Optionally fetch userinfo for additional claims
+    let userinfo = if peer.userinfo_endpoint.is_some() {
+        rp_client.fetch_userinfo(&peer, &token_resp.access_token).await.ok()
+    } else {
+        None
+    };
+
+    let email = claims.email.as_deref()
+        .or(userinfo.as_ref().and_then(|u| u.email.as_deref()));
+    let email_verified = claims.email_verified.unwrap_or(false);
+    let name = claims.name.as_deref()
+        .or(userinfo.as_ref().and_then(|u| u.name.as_deref()));
+
+    // Resolve federated identity → local user
+    let local_user_id = match identity::resolve_federated_identity(
+        &state.db,
+        &peer,
+        &claims.sub,
+        &claims.iss,
+        email,
+        email_verified,
+        name,
+    )
+    .await
+    {
+        Ok(uid) => uid,
+        Err(e) => {
+            tracing::warn!("Federated identity resolution failed: {}", e);
+            return (StatusCode::FORBIDDEN, format!("Cannot resolve federated identity: {}", e)).into_response();
+        }
+    };
+
+    // Create a local session for the federated user
+    let now = chrono::Utc::now().timestamp();
+    let session_ttl = 3600i64;
+
+    // Determine AMR/ACR from federation
+    let amr = if let Some(ref peer_amr) = claims.amr {
+        let mut amr_vals: Vec<String> = vec!["fed".to_string()];
+        amr_vals.extend(peer_amr.iter().cloned());
+        serde_json::to_string(&amr_vals).unwrap_or_else(|_| "[\"fed\"]".to_string())
+    } else {
+        "[\"fed\"]".to_string()
+    };
+
+    let acr = if peer.trust_peer_acr {
+        claims.acr.as_deref().unwrap_or("aal1").to_string()
+    } else {
+        "aal1".to_string()
+    };
+
+    // Create session using the standard API then update AMR/ACR
+    let session = match storage::create_session(
+        &state.db,
+        &local_user_id,
+        now,
+        session_ttl,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to create session for federated user: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create session").into_response();
+        }
+    };
+    let session_id = session.session_id.clone();
+
+    // Update session with federation AMR/ACR
+    let _ = storage::update_session_auth_context(
+        &state.db, &session_id, Some(&amr), Some(&acr), Some(true),
+    ).await;
+
+    // Delete the federation auth request (single-use)
+    let _ = fed_storage::delete_federation_auth_request(&state.db, &fed_req.id).await;
+
+    // Resume the original OIDC flow by redirecting back to /authorize with the original params
+    let original_params: serde_json::Value = serde_json::from_str(&fed_req.original_authorize_params)
+        .unwrap_or_default();
+
+    let mut authorize_url = "/authorize?".to_string();
+    if let Some(obj) = original_params.as_object() {
+        let pairs: Vec<String> = obj
+            .iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| {
+                let val = v.as_str().unwrap_or("");
+                format!("{}={}", urlencoding::encode(k), urlencoding::encode(val))
+            })
+            .collect();
+        authorize_url.push_str(&pairs.join("&"));
+    }
+
+    tracing::info!(
+        peer_domain = %peer.domain,
+        local_user = %local_user_id,
+        "Federated login successful, resuming OIDC flow"
+    );
+
+    // Set session cookie and redirect to /authorize
+    let cookie = format!("session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}", session_id, session_ttl);
+    let mut response = Redirect::temporary(&authorize_url).into_response();
+    response.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+    response
 }

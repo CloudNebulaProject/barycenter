@@ -78,6 +78,9 @@ async fn main() -> Result<()> {
             // init and start background job scheduler
             let _scheduler = jobs::init_scheduler(db.clone()).await?;
 
+            // register at webfingerd (non-blocking, failures are logged not fatal)
+            federation::registration::register_at_webfingerd_on_startup(&settings).await;
+
             // start web server (includes both public and admin servers)
             web::serve(
                 settings,

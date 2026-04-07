@@ -440,7 +440,7 @@ pub async fn get_refresh_token_raw(
     }
 }
 
-fn random_id() -> String {
+pub fn random_id() -> String {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
     base64ct::Base64UrlUnpadded::encode_string(&bytes)

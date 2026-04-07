@@ -8,6 +8,7 @@ pub mod admin_mutations;
 pub mod authz;
 pub mod entities;
 pub mod errors;
+pub mod federation;
 pub mod jobs;
 pub mod jwks;
 pub mod session;

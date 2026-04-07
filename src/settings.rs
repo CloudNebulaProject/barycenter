@@ -8,6 +8,8 @@ pub struct Settings {
     pub database: Database,
     pub keys: Keys,
     #[serde(default)]
+    pub webfinger: WebFinger,
+    #[serde(default)]
     pub federation: Federation,
     #[serde(default)]
     pub authz: AuthzSettings,
@@ -51,10 +53,95 @@ pub struct Keys {
     pub private_key_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WebFinger {
+    /// Enable WebFinger integration with an external webfingerd instance.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Base URL of the webfingerd instance (e.g. "https://webfinger.aopc.cloud").
+    #[serde(default)]
+    pub base_url: String,
+    /// Bearer token for the webfingerd API, obtained from the domain owner.
+    /// Treated as sensitive — redacted from logs and debug output.
+    #[serde(default)]
+    pub service_token: String,
+    /// Path to a file containing the service token (alternative to inline token).
+    /// Useful for container deployments with mounted secrets.
+    #[serde(default)]
+    pub service_token_file: Option<PathBuf>,
+    /// The domain used in `acct:` URIs (e.g. "aopc.cloud").
+    /// This is typically the apex domain, not the auth subdomain.
+    #[serde(default)]
+    pub resource_domain: String,
+}
+
+impl Default for WebFinger {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            service_token: String::new(),
+            service_token_file: None,
+            resource_domain: String::new(),
+        }
+    }
+}
+
+impl WebFinger {
+    /// Resolve the service token, preferring the file if configured.
+    pub fn resolve_service_token(&self) -> Result<String> {
+        if let Some(ref path) = self.service_token_file {
+            std::fs::read_to_string(path)
+                .map(|s| s.trim().to_string())
+                .map_err(|e| miette::miette!("Failed to read webfinger service_token_file {:?}: {}", path, e))
+        } else if !self.service_token.is_empty() {
+            Ok(self.service_token.clone())
+        } else {
+            Err(miette::miette!("WebFinger enabled but no service_token or service_token_file configured"))
+        }
+    }
+}
+
+// Redact service_token from Debug output
+impl std::fmt::Debug for WebFinger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebFinger")
+            .field("enabled", &self.enabled)
+            .field("base_url", &self.base_url)
+            .field("service_token", &if self.service_token.is_empty() { "<empty>" } else { "<redacted>" })
+            .field("service_token_file", &self.service_token_file)
+            .field("resource_domain", &self.resource_domain)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Federation {
-    /// List of trust anchor URLs or fingerprints (placeholder for real federation)
+    /// Enable P2P federation (identity brokering with trusted peers).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum verification level required for trusted peers.
+    /// - "discovery_only": WebFinger + OIDC Discovery checks (default)
+    /// - "entity_proof": Additionally requires a valid signed entity proof
+    #[serde(default = "default_min_verification_level")]
+    pub min_verification_level: String,
+    /// Legacy: list of trust anchor URLs (kept for backwards compatibility).
+    #[serde(default)]
     pub trust_anchors: Vec<String>,
+}
+
+fn default_min_verification_level() -> String {
+    "discovery_only".to_string()
+}
+
+impl Default for Federation {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_verification_level: default_min_verification_level(),
+            trust_anchors: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

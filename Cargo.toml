@@ -58,6 +58,9 @@ tower = "0.5"
 tower_governor = "0.4"
 tower-http = { version = "0.6", features = ["fs"] }
 
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # Validation
 regex = "1"
 url = "2"
