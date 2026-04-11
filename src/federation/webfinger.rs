@@ -131,9 +131,7 @@ impl WebFingerClient {
         let issuer = issuer_link
             .href
             .as_ref()
-            .ok_or_else(|| {
-                WebFingerError::InvalidResponse("issuer link has no href".to_string())
-            })?
+            .ok_or_else(|| WebFingerError::InvalidResponse("issuer link has no href".to_string()))?
             .clone();
 
         // Cache the result.
@@ -232,9 +230,10 @@ impl WebFingerClient {
             )));
         }
 
-        let jrd: JrdDocument = response.json().await.map_err(|e| {
-            WebFingerError::InvalidResponse(format!("failed to parse JRD: {}", e))
-        })?;
+        let jrd: JrdDocument = response
+            .json()
+            .await
+            .map_err(|e| WebFingerError::InvalidResponse(format!("failed to parse JRD: {}", e)))?;
 
         Ok(jrd)
     }
@@ -329,7 +328,10 @@ mod tests {
             .iter()
             .find(|l| l.rel == "http://openid.net/specs/connect/1.0/issuer")
             .unwrap();
-        assert_eq!(issuer_link.href.as_deref(), Some("https://auth.example.com"));
+        assert_eq!(
+            issuer_link.href.as_deref(),
+            Some("https://auth.example.com")
+        );
         assert!(issuer_link.type_.is_none());
 
         let self_link = doc

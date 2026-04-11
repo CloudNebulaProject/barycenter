@@ -24,7 +24,7 @@ pub enum MappingPolicy {
 }
 
 impl MappingPolicy {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "auto_link_by_email" => Self::AutoLinkByEmail,
             "auto_provision" => Self::AutoProvision,
@@ -90,7 +90,7 @@ pub async fn resolve_federated_identity(
     }
 
     // 2. Determine mapping policy.
-    let policy = MappingPolicy::from_str(&peer.mapping_policy);
+    let policy = MappingPolicy::parse(&peer.mapping_policy);
 
     match policy {
         // 3. ExistingOnly — no auto-linking allowed.
@@ -286,23 +286,20 @@ mod tests {
     #[test]
     fn test_mapping_policy_from_str() {
         assert_eq!(
-            MappingPolicy::from_str("existing_only"),
+            MappingPolicy::parse("existing_only"),
             MappingPolicy::ExistingOnly
         );
         assert_eq!(
-            MappingPolicy::from_str("auto_link_by_email"),
+            MappingPolicy::parse("auto_link_by_email"),
             MappingPolicy::AutoLinkByEmail
         );
         assert_eq!(
-            MappingPolicy::from_str("auto_provision"),
+            MappingPolicy::parse("auto_provision"),
             MappingPolicy::AutoProvision
         );
         // Unknown strings default to ExistingOnly
-        assert_eq!(
-            MappingPolicy::from_str("unknown"),
-            MappingPolicy::ExistingOnly
-        );
-        assert_eq!(MappingPolicy::from_str(""), MappingPolicy::ExistingOnly);
+        assert_eq!(MappingPolicy::parse("unknown"), MappingPolicy::ExistingOnly);
+        assert_eq!(MappingPolicy::parse(""), MappingPolicy::ExistingOnly);
     }
 
     // -----------------------------------------------------------------------

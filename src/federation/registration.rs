@@ -40,15 +40,15 @@ struct BatchLinkRegistration {
 
 /// Response from webfingerd link registration.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct LinkResponse {
-    #[allow(dead_code)]
     id: String,
 }
 
 /// Response from webfingerd batch registration.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct BatchLinkResponse {
-    #[allow(dead_code)]
     links: Vec<LinkResponse>,
 }
 
@@ -96,8 +96,7 @@ impl WebFingerRegistrar {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .user_agent("Barycenter/0.2")
-            .build()
-            .map_err(reqwest::Error::from)?;
+            .build()?;
 
         Ok(Self {
             http_client,
@@ -228,10 +227,7 @@ impl WebFingerRegistrar {
     /// Delete a user's OIDC issuer link from webfingerd.
     ///
     /// Queries for the link first, then deletes it by ID.
-    pub async fn deregister_user_issuer(
-        &self,
-        username: &str,
-    ) -> Result<(), RegistrationError> {
+    pub async fn deregister_user_issuer(&self, username: &str) -> Result<(), RegistrationError> {
         let resource_uri = format!("acct:{}@{}", username, self.resource_domain);
         let url = format!(
             "{}/api/v1/links?resource={}",
@@ -329,9 +325,7 @@ impl WebFingerRegistrar {
 ///
 /// Called from the server startup sequence. Failures are logged but do not
 /// prevent the server from starting — federation is optional.
-pub async fn register_at_webfingerd_on_startup(
-    settings: &crate::settings::Settings,
-) {
+pub async fn register_at_webfingerd_on_startup(settings: &crate::settings::Settings) {
     if !settings.webfinger.enabled {
         return;
     }
@@ -349,7 +343,10 @@ pub async fn register_at_webfingerd_on_startup(
     // Register the federation endpoint
     if settings.federation.enabled {
         if let Err(e) = registrar.register_federation_endpoint(&issuer_url).await {
-            warn!("Failed to register federation endpoint at webfingerd: {}", e);
+            warn!(
+                "Failed to register federation endpoint at webfingerd: {}",
+                e
+            );
         }
     }
 

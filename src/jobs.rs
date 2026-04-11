@@ -167,10 +167,9 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         let db = db_clone.clone();
         Box::pin(async move {
             info!("Running cleanup_expired_federation_requests job");
-            let execution_id =
-                start_job_execution(&db, "cleanup_expired_federation_requests")
-                    .await
-                    .ok();
+            let execution_id = start_job_execution(&db, "cleanup_expired_federation_requests")
+                .await
+                .ok();
 
             match federation::storage::cleanup_expired_federation_requests(&db).await {
                 Ok(count) => {
@@ -220,10 +219,7 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
 
             match run_refresh_peer_discovery(&db).await {
                 Ok((refreshed, errors)) => {
-                    info!(
-                        "Refreshed {} peers, {} errors",
-                        refreshed, errors
-                    );
+                    info!("Refreshed {} peers, {} errors", refreshed, errors);
                     let total = refreshed + errors;
                     if let Some(id) = execution_id {
                         let error_msg = if errors > 0 {
@@ -258,15 +254,9 @@ pub async fn init_scheduler(db: DatabaseConnection) -> Result<JobScheduler, Crab
         ))
     })?;
 
-    sched
-        .add(refresh_peer_discovery_job)
-        .await
-        .map_err(|e| {
-            CrabError::Other(format!(
-                "Failed to add refresh peer discovery job: {}",
-                e
-            ))
-        })?;
+    sched.add(refresh_peer_discovery_job).await.map_err(|e| {
+        CrabError::Other(format!("Failed to add refresh peer discovery job: {}", e))
+    })?;
 
     // Start the scheduler
     sched
@@ -333,9 +323,7 @@ pub async fn complete_job_execution(
 /// Run the refresh_peer_discovery logic: re-verify all active peers.
 ///
 /// Returns `(refreshed_count, error_count)`.
-async fn run_refresh_peer_discovery(
-    db: &DatabaseConnection,
-) -> Result<(u64, u64), CrabError> {
+async fn run_refresh_peer_discovery(db: &DatabaseConnection) -> Result<(u64, u64), CrabError> {
     let peers = federation::storage::list_trusted_peers(db).await?;
     let mut refreshed: u64 = 0;
     let mut errors: u64 = 0;
@@ -459,35 +447,32 @@ pub async fn trigger_job_manually(
                 }
             }
         }
-        "refresh_peer_discovery" => {
-            match run_refresh_peer_discovery(db).await {
-                Ok((refreshed, errors)) => {
-                    let total = refreshed + errors;
-                    info!(
-                        "Manually triggered refresh_peer_discovery: {} refreshed, {} errors",
-                        refreshed, errors
-                    );
-                    let error_msg = if errors > 0 {
-                        Some(format!("{} peers failed to refresh", errors))
-                    } else {
-                        None
-                    };
-                    complete_job_execution(
-                        db,
-                        execution_id,
-                        errors == 0,
-                        error_msg,
-                        Some(total as i64),
-                    )
-                    .await?;
-                }
-                Err(e) => {
-                    error!("Manually triggered refresh_peer_discovery failed: {}", e);
-                    complete_job_execution(db, execution_id, false, Some(e.to_string()), None)
-                        .await?;
-                }
+        "refresh_peer_discovery" => match run_refresh_peer_discovery(db).await {
+            Ok((refreshed, errors)) => {
+                let total = refreshed + errors;
+                info!(
+                    "Manually triggered refresh_peer_discovery: {} refreshed, {} errors",
+                    refreshed, errors
+                );
+                let error_msg = if errors > 0 {
+                    Some(format!("{} peers failed to refresh", errors))
+                } else {
+                    None
+                };
+                complete_job_execution(
+                    db,
+                    execution_id,
+                    errors == 0,
+                    error_msg,
+                    Some(total as i64),
+                )
+                .await?;
             }
-        }
+            Err(e) => {
+                error!("Manually triggered refresh_peer_discovery failed: {}", e);
+                complete_job_execution(db, execution_id, false, Some(e.to_string()), None).await?;
+            }
+        },
         _ => {
             return Err(CrabError::Other(format!("Unknown job name: {}", job_name)));
         }

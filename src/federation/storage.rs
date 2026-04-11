@@ -234,9 +234,7 @@ pub async fn get_active_trusted_peer_by_domain(
     Ok(peer.map(TrustedPeer::from))
 }
 
-pub async fn list_trusted_peers(
-    db: &DatabaseConnection,
-) -> Result<Vec<TrustedPeer>, CrabError> {
+pub async fn list_trusted_peers(db: &DatabaseConnection) -> Result<Vec<TrustedPeer>, CrabError> {
     use entities::trusted_peer::Entity;
 
     let peers = Entity::find().all(db).await?;
@@ -250,11 +248,7 @@ pub async fn update_trusted_peer_status(
 ) -> Result<(), CrabError> {
     use entities::trusted_peer::{Column, Entity};
 
-    if let Some(peer) = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?
-    {
+    if let Some(peer) = Entity::find().filter(Column::Id.eq(id)).one(db).await? {
         let mut active: entities::trusted_peer::ActiveModel = peer.into();
         active.status = Set(status.to_string());
         active.updated_at = Set(now_iso());
@@ -275,11 +269,7 @@ pub async fn update_trusted_peer_discovery(
 ) -> Result<(), CrabError> {
     use entities::trusted_peer::{Column, Entity};
 
-    if let Some(peer) = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?
-    {
+    if let Some(peer) = Entity::find().filter(Column::Id.eq(id)).one(db).await? {
         let mut active: entities::trusted_peer::ActiveModel = peer.into();
         active.token_endpoint = Set(token_endpoint.map(|s| s.to_string()));
         active.authorization_endpoint = Set(authorization_endpoint.map(|s| s.to_string()));
@@ -303,11 +293,7 @@ pub async fn update_trusted_peer_verification(
 ) -> Result<(), CrabError> {
     use entities::trusted_peer::{Column, Entity};
 
-    if let Some(peer) = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?
-    {
+    if let Some(peer) = Entity::find().filter(Column::Id.eq(id)).one(db).await? {
         let mut active: entities::trusted_peer::ActiveModel = peer.into();
         active.verification_level = Set(verification_level.map(|s| s.to_string()));
         active.webfinger_issuer_match = Set(webfinger_issuer_match);
@@ -326,11 +312,7 @@ pub async fn update_trusted_peer_discovery_error(
 ) -> Result<(), CrabError> {
     use entities::trusted_peer::{Column, Entity};
 
-    if let Some(peer) = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?
-    {
+    if let Some(peer) = Entity::find().filter(Column::Id.eq(id)).one(db).await? {
         let mut active: entities::trusted_peer::ActiveModel = peer.into();
         active.last_discovery_error = Set(Some(error_message.to_string()));
         active.updated_at = Set(now_iso());
@@ -346,18 +328,12 @@ pub async fn get_trusted_peer_by_id(
 ) -> Result<Option<TrustedPeer>, CrabError> {
     use entities::trusted_peer::{Column, Entity};
 
-    let model = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?;
+    let model = Entity::find().filter(Column::Id.eq(id)).one(db).await?;
 
     Ok(model.map(TrustedPeer::from))
 }
 
-pub async fn delete_trusted_peer(
-    db: &DatabaseConnection,
-    id: &str,
-) -> Result<(), CrabError> {
+pub async fn delete_trusted_peer(db: &DatabaseConnection, id: &str) -> Result<(), CrabError> {
     use entities::trusted_peer::{Column, Entity};
 
     Entity::delete_many()
@@ -425,7 +401,10 @@ pub async fn list_federated_identities_for_user(
         .all(db)
         .await?;
 
-    Ok(identities.into_iter().map(FederatedIdentity::from).collect())
+    Ok(identities
+        .into_iter()
+        .map(FederatedIdentity::from)
+        .collect())
 }
 
 pub async fn update_federated_identity_last_login(
@@ -434,11 +413,7 @@ pub async fn update_federated_identity_last_login(
 ) -> Result<(), CrabError> {
     use entities::federated_identity::{Column, Entity};
 
-    if let Some(identity) = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?
-    {
+    if let Some(identity) = Entity::find().filter(Column::Id.eq(id)).one(db).await? {
         let mut active: entities::federated_identity::ActiveModel = identity.into();
         active.last_login_at = Set(Some(now_iso()));
         active.update(db).await?;
@@ -451,6 +426,7 @@ pub async fn update_federated_identity_last_login(
 // federation_auth_requests CRUD
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_federation_auth_request(
     db: &DatabaseConnection,
     peer_id: &str,
@@ -578,10 +554,7 @@ pub async fn get_peer_request(
 ) -> Result<Option<PeerRequest>, CrabError> {
     use entities::peer_request::{Column, Entity};
 
-    let model = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?;
+    let model = Entity::find().filter(Column::Id.eq(id)).one(db).await?;
 
     Ok(model.map(PeerRequest::from))
 }
@@ -606,11 +579,7 @@ pub async fn update_peer_request_status(
 ) -> Result<(), CrabError> {
     use entities::peer_request::{Column, Entity};
 
-    if let Some(req) = Entity::find()
-        .filter(Column::Id.eq(id))
-        .one(db)
-        .await?
-    {
+    if let Some(req) = Entity::find().filter(Column::Id.eq(id)).one(db).await? {
         let mut active: entities::peer_request::ActiveModel = req.into();
         active.status = Set(status.to_string());
         active.update(db).await?;
@@ -619,9 +588,7 @@ pub async fn update_peer_request_status(
     Ok(())
 }
 
-pub async fn cleanup_expired_peer_requests(
-    db: &DatabaseConnection,
-) -> Result<u64, CrabError> {
+pub async fn cleanup_expired_peer_requests(db: &DatabaseConnection) -> Result<u64, CrabError> {
     use entities::peer_request::{Column, Entity};
 
     let now = now_iso();
@@ -736,7 +703,9 @@ mod tests {
         assert!(none.is_none());
 
         // Activate and try again.
-        update_trusted_peer_status(&db, &id, "active").await.unwrap();
+        update_trusted_peer_status(&db, &id, "active")
+            .await
+            .unwrap();
         let peer = get_active_trusted_peer_by_domain(&db, "peer.example.com")
             .await
             .unwrap()
@@ -751,12 +720,28 @@ mod tests {
         let peers = list_trusted_peers(&db).await.unwrap();
         assert_eq!(peers.len(), 0);
 
-        create_trusted_peer(&db, "a.com", "https://a.com", "c1", None, "existing_only", "tofu")
-            .await
-            .unwrap();
-        create_trusted_peer(&db, "b.com", "https://b.com", "c2", None, "auto_provision", "tofu")
-            .await
-            .unwrap();
+        create_trusted_peer(
+            &db,
+            "a.com",
+            "https://a.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
+        create_trusted_peer(
+            &db,
+            "b.com",
+            "https://b.com",
+            "c2",
+            None,
+            "auto_provision",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let peers = list_trusted_peers(&db).await.unwrap();
         assert_eq!(peers.len(), 2);
@@ -767,18 +752,29 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
         assert_eq!(peer.status, "pending_verification");
 
-        update_trusted_peer_status(&db, &id, "active").await.unwrap();
+        update_trusted_peer_status(&db, &id, "active")
+            .await
+            .unwrap();
         let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
         assert_eq!(peer.status, "active");
 
-        update_trusted_peer_status(&db, &id, "suspended").await.unwrap();
+        update_trusted_peer_status(&db, &id, "suspended")
+            .await
+            .unwrap();
         let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
         assert_eq!(peer.status, "suspended");
     }
@@ -788,9 +784,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         // Initially no endpoints are set.
         let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
@@ -810,10 +813,22 @@ mod tests {
         .unwrap();
 
         let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
-        assert_eq!(peer.token_endpoint.as_deref(), Some("https://peer.example.com/token"));
-        assert_eq!(peer.authorization_endpoint.as_deref(), Some("https://peer.example.com/authorize"));
-        assert_eq!(peer.userinfo_endpoint.as_deref(), Some("https://peer.example.com/userinfo"));
-        assert_eq!(peer.jwks_uri.as_deref(), Some("https://peer.example.com/.well-known/jwks.json"));
+        assert_eq!(
+            peer.token_endpoint.as_deref(),
+            Some("https://peer.example.com/token")
+        );
+        assert_eq!(
+            peer.authorization_endpoint.as_deref(),
+            Some("https://peer.example.com/authorize")
+        );
+        assert_eq!(
+            peer.userinfo_endpoint.as_deref(),
+            Some("https://peer.example.com/userinfo")
+        );
+        assert_eq!(
+            peer.jwks_uri.as_deref(),
+            Some("https://peer.example.com/.well-known/jwks.json")
+        );
         assert_eq!(peer.pinned_jwks.as_deref(), Some(r#"{"keys":[]}"#));
         assert!(peer.last_discovery_refresh.is_some());
         assert!(peer.last_discovery_error.is_none());
@@ -824,9 +839,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         update_trusted_peer_verification(&db, &id, Some("entity_proof"), Some(true))
             .await
@@ -843,16 +865,26 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         update_trusted_peer_discovery_error(&db, &id, "connection refused")
             .await
             .unwrap();
 
         let peer = get_trusted_peer_by_id(&db, &id).await.unwrap().unwrap();
-        assert_eq!(peer.last_discovery_error.as_deref(), Some("connection refused"));
+        assert_eq!(
+            peer.last_discovery_error.as_deref(),
+            Some("connection refused")
+        );
     }
 
     #[tokio::test]
@@ -860,9 +892,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         assert!(get_trusted_peer_by_id(&db, &id).await.unwrap().is_some());
 
@@ -876,9 +915,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         create_trusted_peer(
-            &db, "peer.example.com", "https://auth.peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://auth.peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let peer = get_trusted_peer_by_issuer_url(&db, "https://auth.peer.example.com")
             .await
@@ -901,9 +947,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let peer_id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let link_id = link_federated_identity(
             &db,
@@ -926,7 +979,10 @@ mod tests {
         assert_eq!(found.local_user_id, "local_user_1");
         assert_eq!(found.external_subject, "ext_sub_123");
         assert_eq!(found.external_issuer, "https://peer.example.com");
-        assert_eq!(found.external_email.as_deref(), Some("user@peer.example.com"));
+        assert_eq!(
+            found.external_email.as_deref(),
+            Some("user@peer.example.com")
+        );
         assert!(found.last_login_at.is_none());
 
         // Non-existent
@@ -941,9 +997,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let peer_id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         // No identities yet.
         let identities = list_federated_identities_for_user(&db, "local_user_1")
@@ -953,17 +1016,38 @@ mod tests {
 
         // Link two identities from different peers to the same local user.
         link_federated_identity(
-            &db, "local_user_1", &peer_id, "ext1", "https://peer.example.com", None,
-        ).await.unwrap();
+            &db,
+            "local_user_1",
+            &peer_id,
+            "ext1",
+            "https://peer.example.com",
+            None,
+        )
+        .await
+        .unwrap();
 
         let peer_id2 = create_trusted_peer(
-            &db, "other.example.com", "https://other.example.com",
-            "c2", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "other.example.com",
+            "https://other.example.com",
+            "c2",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         link_federated_identity(
-            &db, "local_user_1", &peer_id2, "ext2", "https://other.example.com", None,
-        ).await.unwrap();
+            &db,
+            "local_user_1",
+            &peer_id2,
+            "ext2",
+            "https://other.example.com",
+            None,
+        )
+        .await
+        .unwrap();
 
         let identities = list_federated_identities_for_user(&db, "local_user_1")
             .await
@@ -976,13 +1060,27 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let peer_id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let link_id = link_federated_identity(
-            &db, "local_user_1", &peer_id, "ext_sub", "https://peer.example.com", None,
-        ).await.unwrap();
+            &db,
+            "local_user_1",
+            &peer_id,
+            "ext_sub",
+            "https://peer.example.com",
+            None,
+        )
+        .await
+        .unwrap();
 
         // Initially no last_login_at.
         let identity = find_local_user_by_federated_id(&db, &peer_id, "ext_sub")
@@ -992,7 +1090,9 @@ mod tests {
         assert!(identity.last_login_at.is_none());
 
         // Update last_login_at.
-        update_federated_identity_last_login(&db, &link_id).await.unwrap();
+        update_federated_identity_last_login(&db, &link_id)
+            .await
+            .unwrap();
 
         let identity = find_local_user_by_federated_id(&db, &peer_id, "ext_sub")
             .await
@@ -1010,9 +1110,16 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let peer_id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let id = create_federation_auth_request(
             &db,
@@ -1057,20 +1164,41 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let peer_id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         let id = create_federation_auth_request(
-            &db, &peer_id, "state_del", "nonce", "verifier",
-            "params", None, "2099-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            &peer_id,
+            "state_del",
+            "nonce",
+            "verifier",
+            "params",
+            None,
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
-        assert!(get_federation_auth_request_by_state(&db, "state_del").await.unwrap().is_some());
+        assert!(get_federation_auth_request_by_state(&db, "state_del")
+            .await
+            .unwrap()
+            .is_some());
 
         delete_federation_auth_request(&db, &id).await.unwrap();
 
-        assert!(get_federation_auth_request_by_state(&db, "state_del").await.unwrap().is_none());
+        assert!(get_federation_auth_request_by_state(&db, "state_del")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -1078,29 +1206,58 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let peer_id = create_trusted_peer(
-            &db, "peer.example.com", "https://peer.example.com",
-            "c1", None, "existing_only", "tofu",
-        ).await.unwrap();
+            &db,
+            "peer.example.com",
+            "https://peer.example.com",
+            "c1",
+            None,
+            "existing_only",
+            "tofu",
+        )
+        .await
+        .unwrap();
 
         // Create an already-expired request.
         create_federation_auth_request(
-            &db, &peer_id, "state_expired", "nonce", "verifier",
-            "params", None, "2000-01-01T00:00:00Z", // well in the past
-        ).await.unwrap();
+            &db,
+            &peer_id,
+            "state_expired",
+            "nonce",
+            "verifier",
+            "params",
+            None,
+            "2000-01-01T00:00:00Z", // well in the past
+        )
+        .await
+        .unwrap();
 
         // Create a valid (future) request.
         create_federation_auth_request(
-            &db, &peer_id, "state_valid", "nonce", "verifier",
-            "params", None, "2099-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            &peer_id,
+            "state_valid",
+            "nonce",
+            "verifier",
+            "params",
+            None,
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
         let cleaned = cleanup_expired_federation_requests(&db).await.unwrap();
         assert_eq!(cleaned, 1);
 
         // The expired one is gone.
-        assert!(get_federation_auth_request_by_state(&db, "state_expired").await.unwrap().is_none());
+        assert!(get_federation_auth_request_by_state(&db, "state_expired")
+            .await
+            .unwrap()
+            .is_none());
         // The valid one remains.
-        assert!(get_federation_auth_request_by_state(&db, "state_valid").await.unwrap().is_some());
+        assert!(get_federation_auth_request_by_state(&db, "state_valid")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     // -----------------------------------------------------------------------
@@ -1129,7 +1286,10 @@ mod tests {
         assert_eq!(req.requesting_issuer, "https://remote.example.com");
         assert_eq!(req.requesting_domain, "remote.example.com");
         assert_eq!(req.client_id_at_us, "client_at_us_123");
-        assert_eq!(req.callback_endpoint, "https://remote.example.com/federation/callback");
+        assert_eq!(
+            req.callback_endpoint,
+            "https://remote.example.com/federation/callback"
+        );
         assert_eq!(req.request_jws, "eyJ...");
         assert_eq!(req.status, "pending_approval");
     }
@@ -1144,17 +1304,35 @@ mod tests {
 
         // Create two pending requests.
         create_peer_request(
-            &db, "https://a.com", "a.com", "c1", "https://a.com/cb", "jws1", "2099-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            "https://a.com",
+            "a.com",
+            "c1",
+            "https://a.com/cb",
+            "jws1",
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
         let id2 = create_peer_request(
-            &db, "https://b.com", "b.com", "c2", "https://b.com/cb", "jws2", "2099-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            "https://b.com",
+            "b.com",
+            "c2",
+            "https://b.com/cb",
+            "jws2",
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
         let pending = list_pending_peer_requests(&db).await.unwrap();
         assert_eq!(pending.len(), 2);
 
         // Approve one — it should no longer appear in pending.
-        update_peer_request_status(&db, &id2, "approved").await.unwrap();
+        update_peer_request_status(&db, &id2, "approved")
+            .await
+            .unwrap();
         let pending = list_pending_peer_requests(&db).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].requesting_domain, "a.com");
@@ -1165,18 +1343,29 @@ mod tests {
         let (db, _tmp) = setup_db().await;
 
         let id = create_peer_request(
-            &db, "https://remote.com", "remote.com", "c1", "https://remote.com/cb",
-            "jws", "2099-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            "https://remote.com",
+            "remote.com",
+            "c1",
+            "https://remote.com/cb",
+            "jws",
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
         let req = get_peer_request(&db, &id).await.unwrap().unwrap();
         assert_eq!(req.status, "pending_approval");
 
-        update_peer_request_status(&db, &id, "approved").await.unwrap();
+        update_peer_request_status(&db, &id, "approved")
+            .await
+            .unwrap();
         let req = get_peer_request(&db, &id).await.unwrap().unwrap();
         assert_eq!(req.status, "approved");
 
-        update_peer_request_status(&db, &id, "rejected").await.unwrap();
+        update_peer_request_status(&db, &id, "rejected")
+            .await
+            .unwrap();
         let req = get_peer_request(&db, &id).await.unwrap().unwrap();
         assert_eq!(req.status, "rejected");
     }
@@ -1187,22 +1376,45 @@ mod tests {
 
         // Create an expired pending request.
         create_peer_request(
-            &db, "https://expired.com", "expired.com", "c1", "https://expired.com/cb",
-            "jws", "2000-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            "https://expired.com",
+            "expired.com",
+            "c1",
+            "https://expired.com/cb",
+            "jws",
+            "2000-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
         // Create a valid pending request.
         create_peer_request(
-            &db, "https://valid.com", "valid.com", "c2", "https://valid.com/cb",
-            "jws", "2099-01-01T00:00:00Z",
-        ).await.unwrap();
+            &db,
+            "https://valid.com",
+            "valid.com",
+            "c2",
+            "https://valid.com/cb",
+            "jws",
+            "2099-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
         // Create an expired but already approved request (should NOT be cleaned up).
         let approved_id = create_peer_request(
-            &db, "https://approved.com", "approved.com", "c3", "https://approved.com/cb",
-            "jws", "2000-01-01T00:00:00Z",
-        ).await.unwrap();
-        update_peer_request_status(&db, &approved_id, "approved").await.unwrap();
+            &db,
+            "https://approved.com",
+            "approved.com",
+            "c3",
+            "https://approved.com/cb",
+            "jws",
+            "2000-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        update_peer_request_status(&db, &approved_id, "approved")
+            .await
+            .unwrap();
 
         let cleaned = cleanup_expired_peer_requests(&db).await.unwrap();
         assert_eq!(cleaned, 1); // only the expired pending one

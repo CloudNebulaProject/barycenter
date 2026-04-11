@@ -77,16 +77,17 @@ pub async fn verify_peer(
     let wf_client = WebFingerClient::new();
     let federation_acct = format!("_federation@{}", domain);
 
-    let discovered_issuer = wf_client
-        .discover_issuer(&federation_acct)
-        .await
-        .map_err(|e| match e {
-            crate::federation::webfinger::WebFingerError::NotFound
-            | crate::federation::webfinger::WebFingerError::NoIssuerLink => {
-                VerificationError::WebFingerNoEntry(domain.to_string())
-            }
-            other => VerificationError::NetworkError(other.to_string()),
-        })?;
+    let discovered_issuer =
+        wf_client
+            .discover_issuer(&federation_acct)
+            .await
+            .map_err(|e| match e {
+                crate::federation::webfinger::WebFingerError::NotFound
+                | crate::federation::webfinger::WebFingerError::NoIssuerLink => {
+                    VerificationError::WebFingerNoEntry(domain.to_string())
+                }
+                other => VerificationError::NetworkError(other.to_string()),
+            })?;
 
     let webfinger_issuer_match = discovered_issuer == issuer_url;
     if !webfinger_issuer_match {
@@ -183,7 +184,10 @@ pub async fn verify_peer(
             }
         }
     } else {
-        tracing::info!(domain, "no entity proof URL found; verification_level=discovery_only");
+        tracing::info!(
+            domain,
+            "no entity proof URL found; verification_level=discovery_only"
+        );
         "discovery_only".to_string()
     };
 
@@ -212,9 +216,7 @@ pub async fn verify_peer(
 }
 
 /// Convenience wrapper: re-verify an existing trusted peer.
-pub async fn reverify_peer(
-    peer: &TrustedPeer,
-) -> Result<VerificationResult, VerificationError> {
+pub async fn reverify_peer(peer: &TrustedPeer) -> Result<VerificationResult, VerificationError> {
     verify_peer(&peer.domain, &peer.issuer_url).await
 }
 

@@ -8,11 +8,11 @@
 //! 5. Admin B approves, auto-registers at A, sends signed peer-confirm to A.
 //! 6. Peer A receives the confirmation and activates the peer.
 
-use base64ct::Encoding as _;
 use crate::federation::storage;
 use crate::federation::verification;
 use crate::jwks::JwksManager;
 use crate::settings::Settings;
+use base64ct::Encoding as _;
 use chrono::Utc;
 use josekit::jws::{JwsHeader, RS256};
 use josekit::jwt::{self, JwtPayload};
@@ -206,10 +206,7 @@ fn sign_jws(
     let mut header = JwsHeader::new();
     header.set_algorithm("RS256");
     header
-        .set_claim(
-            "typ",
-            Some(serde_json::Value::String(typ.to_string())),
-        )
+        .set_claim("typ", Some(serde_json::Value::String(typ.to_string())))
         .ok();
     if let Some(kid) = private_jwk.key_id() {
         header.set_key_id(kid);
@@ -259,9 +256,7 @@ async fn verify_jws_from_issuer(
     let keys = jwks_value
         .get("keys")
         .and_then(|k| k.as_array())
-        .ok_or_else(|| {
-            PeeringError::VerificationFailed("JWKS missing keys array".to_string())
-        })?;
+        .ok_or_else(|| PeeringError::VerificationFailed("JWKS missing keys array".to_string()))?;
 
     // Decode JWS header to find kid
     let parts: Vec<&str> = jws_compact.split('.').collect();
@@ -286,9 +281,8 @@ async fn verify_jws_from_issuer(
         keys.first()
     };
 
-    let key_value = matching_key.ok_or_else(|| {
-        PeeringError::VerificationFailed("no matching key in JWKS".to_string())
-    })?;
+    let key_value = matching_key
+        .ok_or_else(|| PeeringError::VerificationFailed("no matching key in JWKS".to_string()))?;
 
     let key_map: serde_json::Map<String, serde_json::Value> = key_value
         .as_object()
@@ -335,12 +329,13 @@ pub async fn initiate_peering(
 
     // Step 2a: Discover peer
     let discovery = fetch_discovery(&http, peer_issuer).await?;
-    let reg_endpoint = discovery.registration_endpoint.ok_or_else(|| {
-        PeeringError::DiscoveryFailed {
-            issuer: peer_issuer.to_string(),
-            reason: "no registration_endpoint in discovery".to_string(),
-        }
-    })?;
+    let reg_endpoint =
+        discovery
+            .registration_endpoint
+            .ok_or_else(|| PeeringError::DiscoveryFailed {
+                issuer: peer_issuer.to_string(),
+                reason: "no registration_endpoint in discovery".to_string(),
+            })?;
 
     // Step 2b: Register at peer
     let reg = register_at_peer(&http, &reg_endpoint, &our_issuer, &our_domain).await?;
@@ -424,7 +419,9 @@ pub async fn handle_peer_request(
     // First, decode unverified to get the issuer so we know where to fetch JWKS
     let parts: Vec<&str> = jws_body.split('.').collect();
     if parts.len() != 3 {
-        return Err(PeeringError::InvalidClaims("JWS must have 3 parts".to_string()));
+        return Err(PeeringError::InvalidClaims(
+            "JWS must have 3 parts".to_string(),
+        ));
     }
 
     let payload_bytes = base64ct::Base64UrlUnpadded::decode_vec(parts[1])
@@ -477,12 +474,11 @@ pub async fn handle_peer_request(
         .unwrap_or_default()
         .as_secs() as i64;
 
-    let exp = claims
-        .get("exp")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let exp = claims.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
     if exp <= now {
-        return Err(PeeringError::InvalidClaims("peer-request has expired".to_string()));
+        return Err(PeeringError::InvalidClaims(
+            "peer-request has expired".to_string(),
+        ));
     }
 
     // Compute expiration as ISO string
@@ -553,12 +549,13 @@ pub async fn approve_peer_request(
 
     // Step 5a: Discover peer and register at their /connect/register
     let discovery = fetch_discovery(&http, peer_issuer).await?;
-    let reg_endpoint = discovery.registration_endpoint.ok_or_else(|| {
-        PeeringError::DiscoveryFailed {
-            issuer: peer_issuer.to_string(),
-            reason: "no registration_endpoint in discovery".to_string(),
-        }
-    })?;
+    let reg_endpoint =
+        discovery
+            .registration_endpoint
+            .ok_or_else(|| PeeringError::DiscoveryFailed {
+                issuer: peer_issuer.to_string(),
+                reason: "no registration_endpoint in discovery".to_string(),
+            })?;
 
     let reg = register_at_peer(&http, &reg_endpoint, &our_issuer, &our_domain).await?;
 
@@ -651,7 +648,9 @@ pub async fn handle_peer_confirm(
     // Decode unverified to get issuer
     let parts: Vec<&str> = jws_body.split('.').collect();
     if parts.len() != 3 {
-        return Err(PeeringError::InvalidClaims("JWS must have 3 parts".to_string()));
+        return Err(PeeringError::InvalidClaims(
+            "JWS must have 3 parts".to_string(),
+        ));
     }
 
     let payload_bytes = base64ct::Base64UrlUnpadded::decode_vec(parts[1])
@@ -687,7 +686,9 @@ pub async fn handle_peer_confirm(
         .as_secs() as i64;
     let exp = claims.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
     if exp <= now {
-        return Err(PeeringError::InvalidClaims("peer-confirm has expired".to_string()));
+        return Err(PeeringError::InvalidClaims(
+            "peer-confirm has expired".to_string(),
+        ));
     }
 
     let confirming_domain = claims

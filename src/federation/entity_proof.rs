@@ -126,9 +126,7 @@ pub async fn entity_proof(State(state): State<AppState>) -> impl IntoResponse {
             })),
         )
         .ok();
-    payload
-        .set_claim("jwks", Some(state.jwks.jwks_json()))
-        .ok();
+    payload.set_claim("jwks", Some(state.jwks.jwks_json())).ok();
 
     // 3. Sign with RS256 using the server's private key
     let private_jwk = state.jwks.private_jwk();
@@ -147,7 +145,10 @@ pub async fn entity_proof(State(state): State<AppState>) -> impl IntoResponse {
     let mut header = JwsHeader::new();
     header.set_algorithm("RS256");
     header
-        .set_claim("typ", Some(serde_json::Value::String("entity-proof+jwt".to_string())))
+        .set_claim(
+            "typ",
+            Some(serde_json::Value::String("entity-proof+jwt".to_string())),
+        )
         .ok();
     if let Some(kid) = private_jwk.key_id() {
         header.set_key_id(kid);
@@ -171,10 +172,7 @@ pub async fn entity_proof(State(state): State<AppState>) -> impl IntoResponse {
         "content-type",
         HeaderValue::from_static("application/entity-statement+jwt"),
     );
-    headers.insert(
-        "access-control-allow-origin",
-        HeaderValue::from_static("*"),
-    );
+    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
 
     (StatusCode::OK, headers, jws)
 }
@@ -240,9 +238,7 @@ pub fn verify_entity_proof(
 
     let key_map: serde_json::Map<String, Value> = key_value
         .as_object()
-        .ok_or_else(|| {
-            EntityProofError::MalformedPayload("JWK must be a JSON object".to_string())
-        })?
+        .ok_or_else(|| EntityProofError::MalformedPayload("JWK must be a JSON object".to_string()))?
         .clone();
 
     let jwk = josekit::jwk::Jwk::from_map(key_map)
@@ -257,11 +253,11 @@ pub fn verify_entity_proof(
         .map_err(|_| EntityProofError::InvalidSignature)?;
 
     // 5. Parse the verified claims
-    let claims: EntityProofClaims = serde_json::from_value(
-        serde_json::to_value(verified_payload.claims_set())
-            .map_err(|e| EntityProofError::MalformedPayload(format!("failed to serialize claims: {e}")))?,
-    )
-    .map_err(|e| EntityProofError::MalformedPayload(format!("failed to parse claims: {e}")))?;
+    let claims: EntityProofClaims =
+        serde_json::from_value(serde_json::to_value(verified_payload.claims_set()).map_err(
+            |e| EntityProofError::MalformedPayload(format!("failed to serialize claims: {e}")),
+        )?)
+        .map_err(|e| EntityProofError::MalformedPayload(format!("failed to parse claims: {e}")))?;
 
     // 6. Validate: iss == sub
     if claims.iss != claims.sub {
@@ -340,7 +336,10 @@ mod tests {
             EntityProofError::InvalidSignature.to_string(),
             "invalid JWS signature"
         );
-        assert_eq!(EntityProofError::Expired.to_string(), "entity proof has expired");
+        assert_eq!(
+            EntityProofError::Expired.to_string(),
+            "entity proof has expired"
+        );
         assert_eq!(
             EntityProofError::DomainMismatch("a.com".into(), "b.com".into()).to_string(),
             "domain mismatch: expected a.com, got b.com"
@@ -458,9 +457,7 @@ mod tests {
         payload
             .set_claim("exp", Some(json!(now + exp_offset_secs)))
             .ok();
-        payload
-            .set_claim("domain", Some(json!(domain)))
-            .ok();
+        payload.set_claim("domain", Some(json!(domain))).ok();
         payload
             .set_claim(
                 "federation",
@@ -492,8 +489,8 @@ mod tests {
         let (jws, _key) = build_test_entity_proof(
             "example.com",
             "https://idp.example.com",
-            86400,  // exp: +24h
-            0,      // iat: now
+            86400, // exp: +24h
+            0,     // iat: now
         );
 
         let claims = verify_entity_proof(&jws, "example.com", "https://idp.example.com").unwrap();
@@ -505,12 +502,8 @@ mod tests {
 
     #[test]
     fn test_verify_entity_proof_domain_mismatch() {
-        let (jws, _key) = build_test_entity_proof(
-            "example.com",
-            "https://idp.example.com",
-            86400,
-            0,
-        );
+        let (jws, _key) =
+            build_test_entity_proof("example.com", "https://idp.example.com", 86400, 0);
 
         let result = verify_entity_proof(&jws, "wrong.com", "https://idp.example.com");
         match result {
@@ -524,12 +517,8 @@ mod tests {
 
     #[test]
     fn test_verify_entity_proof_issuer_mismatch() {
-        let (jws, _key) = build_test_entity_proof(
-            "example.com",
-            "https://idp.example.com",
-            86400,
-            0,
-        );
+        let (jws, _key) =
+            build_test_entity_proof("example.com", "https://idp.example.com", 86400, 0);
 
         let result = verify_entity_proof(&jws, "example.com", "https://wrong.example.com");
         match result {
@@ -546,8 +535,8 @@ mod tests {
         let (jws, _key) = build_test_entity_proof(
             "example.com",
             "https://idp.example.com",
-            -3600,  // expired 1 hour ago
-            -7200,  // issued 2 hours ago
+            -3600, // expired 1 hour ago
+            -7200, // issued 2 hours ago
         );
 
         let result = verify_entity_proof(&jws, "example.com", "https://idp.example.com");
@@ -562,27 +551,30 @@ mod tests {
         let (jws, _key) = build_test_entity_proof(
             "example.com",
             "https://idp.example.com",
-            172800,   // exp: +48h
-            86400,    // iat: +24h (in the future)
+            172800, // exp: +48h
+            86400,  // iat: +24h (in the future)
         );
 
         let result = verify_entity_proof(&jws, "example.com", "https://idp.example.com");
         match result {
             Err(EntityProofError::MalformedPayload(msg)) => {
-                assert!(msg.contains("future"), "Expected 'future' in message: {}", msg);
+                assert!(
+                    msg.contains("future"),
+                    "Expected 'future' in message: {}",
+                    msg
+                );
             }
-            other => panic!("Expected MalformedPayload about future iat, got: {:?}", other),
+            other => panic!(
+                "Expected MalformedPayload about future iat, got: {:?}",
+                other
+            ),
         }
     }
 
     #[test]
     fn test_verify_entity_proof_tampered_signature() {
-        let (mut jws, _key) = build_test_entity_proof(
-            "example.com",
-            "https://idp.example.com",
-            86400,
-            0,
-        );
+        let (mut jws, _key) =
+            build_test_entity_proof("example.com", "https://idp.example.com", 86400, 0);
 
         // Tamper with the signature by modifying the last character.
         let last_char = jws.pop().unwrap();

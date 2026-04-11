@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::entities;
 use crate::federation;
-use crate::jwks::JwksManager;
 use crate::jobs;
+use crate::jwks::JwksManager;
 use crate::settings::Settings;
 use crate::storage;
 
@@ -40,16 +40,25 @@ impl AdminMutation {
 
     /// Add a trusted federation peer
     #[graphql(name = "addTrustedPeer")]
+    #[allow(clippy::too_many_arguments)]
     async fn add_trusted_peer(
         &self,
         ctx: &Context<'_>,
         #[graphql(desc = "Domain of the peer")] domain: String,
         #[graphql(desc = "Issuer URL of the peer")] issuer_url: String,
         #[graphql(desc = "OAuth client_id registered at the peer")] client_id: String,
-        #[graphql(desc = "OAuth client_secret registered at the peer")] client_secret: Option<String>,
+        #[graphql(desc = "OAuth client_secret registered at the peer")] client_secret: Option<
+            String,
+        >,
         #[graphql(desc = "Pinned JWKS JSON document")] pinned_jwks: Option<String>,
-        #[graphql(desc = "Mapping policy (prompt | auto_link | auto_create)", default_with = "Some(\"prompt\".to_string())")] mapping_policy: Option<String>,
-        #[graphql(desc = "Skip verification and set active immediately")] manual_override: Option<bool>,
+        #[graphql(
+            desc = "Mapping policy (prompt | auto_link | auto_create)",
+            default_with = "Some(\"prompt\".to_string())"
+        )]
+        mapping_policy: Option<String>,
+        #[graphql(desc = "Skip verification and set active immediately")] manual_override: Option<
+            bool,
+        >,
     ) -> Result<PeerOperationResult> {
         let db = ctx
             .data::<Arc<DatabaseConnection>>()
@@ -264,9 +273,7 @@ impl AdminMutation {
                             Some(result.webfinger_issuer_match),
                         )
                         .await
-                        .map_err(|e| {
-                            Error::new(format!("Failed to update verification: {}", e))
-                        })?;
+                        .map_err(|e| Error::new(format!("Failed to update verification: {}", e)))?;
 
                         federation::storage::update_trusted_peer_status(
                             db.as_ref(),
@@ -405,9 +412,7 @@ impl AdminMutation {
                             Some(result.webfinger_issuer_match),
                         )
                         .await
-                        .map_err(|e| {
-                            Error::new(format!("Failed to update verification: {}", e))
-                        })?;
+                        .map_err(|e| Error::new(format!("Failed to update verification: {}", e)))?;
 
                         let updated =
                             federation::storage::get_trusted_peer_by_id(db.as_ref(), &p.id)
@@ -416,7 +421,10 @@ impl AdminMutation {
 
                         Ok(PeerOperationResult {
                             success: true,
-                            message: format!("Peer '{}' re-verified (level: {})", domain, result.verification_level),
+                            message: format!(
+                                "Peer '{}' re-verified (level: {})",
+                                domain, result.verification_level
+                            ),
                             peer: updated.as_ref().map(TrustedPeerGql::from),
                         })
                     }
@@ -510,12 +518,22 @@ impl AdminMutation {
             });
         }
 
-        match federation::peering::initiate_peering(db.as_ref(), jwks, settings.as_ref(), &peer_issuer_url).await {
+        match federation::peering::initiate_peering(
+            db.as_ref(),
+            jwks,
+            settings.as_ref(),
+            &peer_issuer_url,
+        )
+        .await
+        {
             Ok(result) => {
-                let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &result.peer_domain)
-                    .await
-                    .ok()
-                    .flatten();
+                let peer = federation::storage::get_trusted_peer_by_domain(
+                    db.as_ref(),
+                    &result.peer_domain,
+                )
+                .await
+                .ok()
+                .flatten();
 
                 Ok(PeerOperationResult {
                     success: true,
@@ -562,12 +580,22 @@ impl AdminMutation {
             });
         }
 
-        match federation::peering::approve_peer_request(db.as_ref(), jwks, settings.as_ref(), &request_id).await {
+        match federation::peering::approve_peer_request(
+            db.as_ref(),
+            jwks,
+            settings.as_ref(),
+            &request_id,
+        )
+        .await
+        {
             Ok(result) => {
-                let peer = federation::storage::get_trusted_peer_by_domain(db.as_ref(), &result.peer_domain)
-                    .await
-                    .ok()
-                    .flatten();
+                let peer = federation::storage::get_trusted_peer_by_domain(
+                    db.as_ref(),
+                    &result.peer_domain,
+                )
+                .await
+                .ok()
+                .flatten();
 
                 Ok(PeerOperationResult {
                     success: true,
@@ -603,25 +631,23 @@ impl AdminMutation {
 
         match request {
             Some(req) if req.status == "pending_approval" => {
-                federation::storage::update_peer_request_status(db.as_ref(), &request_id, "rejected")
-                    .await
-                    .map_err(|e| Error::new(format!("Database error: {}", e)))?;
+                federation::storage::update_peer_request_status(
+                    db.as_ref(),
+                    &request_id,
+                    "rejected",
+                )
+                .await
+                .map_err(|e| Error::new(format!("Database error: {}", e)))?;
 
                 Ok(PeerOperationResult {
                     success: true,
-                    message: format!(
-                        "Peer request from {} rejected",
-                        req.requesting_domain
-                    ),
+                    message: format!("Peer request from {} rejected", req.requesting_domain),
                     peer: None,
                 })
             }
             Some(req) => Ok(PeerOperationResult {
                 success: false,
-                message: format!(
-                    "Cannot reject request with status '{}'",
-                    req.status
-                ),
+                message: format!("Cannot reject request with status '{}'", req.status),
                 peer: None,
             }),
             None => Ok(PeerOperationResult {
@@ -799,13 +825,15 @@ impl AdminQuery {
         // For each identity, look up the peer domain from peer_id
         let mut results = Vec::with_capacity(identities.len());
         for ident in &identities {
-            let peer_domain =
-                match federation::storage::get_trusted_peer_by_id(db.as_ref(), &ident.peer_id)
-                    .await
-                {
-                    Ok(Some(p)) => p.domain,
-                    _ => ident.peer_id.clone(), // fallback to peer_id if lookup fails
-                };
+            let peer_domain = match federation::storage::get_trusted_peer_by_id(
+                db.as_ref(),
+                &ident.peer_id,
+            )
+            .await
+            {
+                Ok(Some(p)) => p.domain,
+                _ => ident.peer_id.clone(), // fallback to peer_id if lookup fails
+            };
 
             results.push(FederatedIdentityGql {
                 id: ident.id.clone(),

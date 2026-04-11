@@ -194,7 +194,7 @@ impl OidcRpClient {
             ("code_challenge_method", "S256"),
         ];
 
-        let query = serde_urlencoded::to_string(&params).map_err(|e| {
+        let query = serde_urlencoded::to_string(params).map_err(|e| {
             RpClientError::DiscoveryFailed(format!("failed to encode parameters: {}", e))
         })?;
 
@@ -289,24 +289,20 @@ impl OidcRpClient {
             RpClientError::TokenValidationFailed(format!("failed to parse pinned JWKS: {}", e))
         })?;
 
-        let keys = jwks
-            .get("keys")
-            .and_then(|k| k.as_array())
-            .ok_or_else(|| {
-                RpClientError::TokenValidationFailed(
-                    "pinned_jwks does not contain a keys array".to_string(),
-                )
-            })?;
+        let keys = jwks.get("keys").and_then(|k| k.as_array()).ok_or_else(|| {
+            RpClientError::TokenValidationFailed(
+                "pinned_jwks does not contain a keys array".to_string(),
+            )
+        })?;
 
         // Extract the kid from the JWT header to pick the right key.
         let header_part = id_token_jwt.split('.').next().ok_or_else(|| {
             RpClientError::TokenValidationFailed("malformed JWT – no header".to_string())
         })?;
 
-        let header_bytes =
-            base64ct::Base64UrlUnpadded::decode_vec(header_part).map_err(|e| {
-                RpClientError::TokenValidationFailed(format!("failed to decode JWT header: {}", e))
-            })?;
+        let header_bytes = base64ct::Base64UrlUnpadded::decode_vec(header_part).map_err(|e| {
+            RpClientError::TokenValidationFailed(format!("failed to decode JWT header: {}", e))
+        })?;
 
         let header: serde_json::Value = serde_json::from_slice(&header_bytes).map_err(|e| {
             RpClientError::TokenValidationFailed(format!("failed to parse JWT header: {}", e))
@@ -344,11 +340,13 @@ impl OidcRpClient {
             RpClientError::SignatureVerification(format!("failed to create verifier: {}", e))
         })?;
 
-        let (payload, _header) = jwt::decode_with_verifier(id_token_jwt, &verifier).map_err(
-            |e| {
-                RpClientError::SignatureVerification(format!("signature verification failed: {}", e))
-            },
-        )?;
+        let (payload, _header) =
+            jwt::decode_with_verifier(id_token_jwt, &verifier).map_err(|e| {
+                RpClientError::SignatureVerification(format!(
+                    "signature verification failed: {}",
+                    e
+                ))
+            })?;
 
         // Parse the payload into our claims struct.
         let payload_json = serde_json::to_value(payload.claims_set()).map_err(|e| {
@@ -372,7 +370,9 @@ impl OidcRpClient {
         // -- Validate audience --
         let aud_matches = match &claims.aud {
             serde_json::Value::String(s) => s == &peer.client_id,
-            serde_json::Value::Array(arr) => arr.iter().any(|v| v.as_str() == Some(&peer.client_id)),
+            serde_json::Value::Array(arr) => {
+                arr.iter().any(|v| v.as_str() == Some(&peer.client_id))
+            }
             _ => false,
         };
         if !aud_matches {
@@ -512,7 +512,13 @@ mod tests {
         let peer = make_test_peer();
 
         let url = client
-            .build_authorize_url(&peer, "state123", "nonce456", "challenge789", "http://localhost/callback")
+            .build_authorize_url(
+                &peer,
+                "state123",
+                "nonce456",
+                "challenge789",
+                "http://localhost/callback",
+            )
             .unwrap();
 
         assert!(url.starts_with("https://other.example.com/authorize?"));
@@ -532,7 +538,11 @@ mod tests {
         peer.authorization_endpoint = None;
 
         let result = client.build_authorize_url(
-            &peer, "state", "nonce", "challenge", "http://localhost/callback",
+            &peer,
+            "state",
+            "nonce",
+            "challenge",
+            "http://localhost/callback",
         );
         assert!(result.is_err());
     }
@@ -710,10 +720,7 @@ mod tests {
 
     #[test]
     fn test_rp_client_error_display() {
-        assert_eq!(
-            RpClientError::TokenExpired.to_string(),
-            "token expired"
-        );
+        assert_eq!(RpClientError::TokenExpired.to_string(), "token expired");
         assert_eq!(
             RpClientError::InvalidIssuer {
                 expected: "a".into(),

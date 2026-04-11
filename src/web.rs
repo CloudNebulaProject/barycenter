@@ -81,10 +81,7 @@ async fn gather_claims(
                 if let Some(val) = props.get(claim) {
                     claims.insert(claim.to_string(), val.clone());
                 } else if let Some(ref u) = user {
-                    claims.insert(
-                        claim.to_string(),
-                        Value::String(u.username.clone()),
-                    );
+                    claims.insert(claim.to_string(), Value::String(u.username.clone()));
                 }
             } else if let Some(val) = props.get(claim) {
                 claims.insert(claim.to_string(), val.clone());
@@ -201,7 +198,10 @@ pub async fn serve(
             get(get_property).put(set_property),
         )
         .route("/federation/trust-anchors", get(trust_anchors))
-        .route("/.well-known/barycenter-entity", get(crate::federation::entity_proof::entity_proof))
+        .route(
+            "/.well-known/barycenter-entity",
+            get(crate::federation::entity_proof::entity_proof),
+        )
         .route("/federation/callback", get(federation_callback))
         .route("/federation/peer-request", post(federation_peer_request))
         .route("/federation/peer-confirm", post(federation_peer_confirm))
@@ -599,9 +599,9 @@ async fn authorize(
             // --- Federation: check if login_hint points to a trusted peer ---
             if state.settings.federation.enabled {
                 if let Some(ref login_hint) = q.login_hint {
-                    if let Some(redirect) = try_federated_redirect(
-                        &state, login_hint, &q, &code_challenge, &ccm,
-                    ).await {
+                    if let Some(redirect) =
+                        try_federated_redirect(&state, login_hint, &q, &code_challenge, &ccm).await
+                    {
                         return redirect.into_response();
                     }
                 }
@@ -2250,10 +2250,7 @@ async fn userinfo(
         Ok(c) => c,
         Err(_) => {
             let mut c = serde_json::Map::new();
-            c.insert(
-                "sub".to_string(),
-                Value::String(token_row.subject.clone()),
-            );
+            c.insert("sub".to_string(), Value::String(token_row.subject.clone()));
             c
         }
     };
@@ -3992,7 +3989,9 @@ async fn try_federated_redirect(
     code_challenge: &str,
     code_challenge_method: &str,
 ) -> Option<axum::response::Response> {
-    use crate::federation::{rp_client::OidcRpClient, storage as fed_storage, webfinger::WebFingerClient};
+    use crate::federation::{
+        rp_client::OidcRpClient, storage as fed_storage, webfinger::WebFingerClient,
+    };
 
     let domain = match WebFingerClient::extract_domain(login_hint) {
         Ok(d) => d,
@@ -4014,7 +4013,10 @@ async fn try_federated_redirect(
                 let wf_client = WebFingerClient::new();
                 if let Ok(issuer) = wf_client.discover_issuer(login_hint).await {
                     if let Ok(peers) = fed_storage::list_trusted_peers(&state.db).await {
-                        if let Some(p) = peers.into_iter().find(|p| p.issuer_url == issuer && p.status == "active") {
+                        if let Some(p) = peers
+                            .into_iter()
+                            .find(|p| p.issuer_url == issuer && p.status == "active")
+                        {
                             p
                         } else {
                             return None;
@@ -4084,7 +4086,11 @@ async fn try_federated_redirect(
 
     // Build redirect URL to the peer's authorize endpoint
     let callback_uri = format!("{}/federation/callback", state.settings.issuer());
-    let scopes = if peer.scopes.is_empty() { "openid email profile" } else { &peer.scopes };
+    let scopes = if peer.scopes.is_empty() {
+        "openid email profile"
+    } else {
+        &peer.scopes
+    };
     let mut redirect_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
         auth_endpoint,
@@ -4128,7 +4134,11 @@ async fn federation_callback(
     if let Some(error) = &q.error {
         let desc = q.error_description.as_deref().unwrap_or("unknown error");
         tracing::warn!(error = %error, description = %desc, "Peer IdP returned error");
-        return (StatusCode::BAD_REQUEST, format!("Federated login failed: {} - {}", error, desc)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Federated login failed: {} - {}", error, desc),
+        )
+            .into_response();
     }
 
     let fed_state = match &q.state {
@@ -4141,21 +4151,34 @@ async fn federation_callback(
     };
 
     // Look up the federation auth request by state
-    let fed_req = match fed_storage::get_federation_auth_request_by_state(&state.db, fed_state).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return (StatusCode::BAD_REQUEST, "Invalid or expired federation state").into_response(),
-        Err(e) => {
-            tracing::error!("DB error looking up federation request: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
-        }
-    };
+    let fed_req =
+        match fed_storage::get_federation_auth_request_by_state(&state.db, fed_state).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid or expired federation state",
+                )
+                    .into_response()
+            }
+            Err(e) => {
+                tracing::error!("DB error looking up federation request: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+            }
+        };
 
     // Check expiry
-    if let Ok(expires) = chrono::NaiveDateTime::parse_from_str(&fed_req.expires_at, "%Y-%m-%dT%H:%M:%SZ") {
+    if let Ok(expires) =
+        chrono::NaiveDateTime::parse_from_str(&fed_req.expires_at, "%Y-%m-%dT%H:%M:%SZ")
+    {
         let expires_utc = expires.and_utc();
         if chrono::Utc::now() > expires_utc {
             let _ = fed_storage::delete_federation_auth_request(&state.db, &fed_req.id).await;
-            return (StatusCode::BAD_REQUEST, "Federation request expired — please try again").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "Federation request expired — please try again",
+            )
+                .into_response();
         }
     }
 
@@ -4187,39 +4210,59 @@ async fn federation_callback(
     let rp_client = OidcRpClient::new();
     let callback_uri = format!("{}/federation/callback", state.settings.issuer());
 
-    let token_resp = match rp_client.exchange_code(&peer, code, &fed_req.pkce_verifier, &callback_uri).await {
+    let token_resp = match rp_client
+        .exchange_code(&peer, code, &fed_req.pkce_verifier, &callback_uri)
+        .await
+    {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("Token exchange with peer failed: {}", e);
-            return (StatusCode::BAD_GATEWAY, format!("Failed to exchange code with peer: {}", e)).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to exchange code with peer: {}", e),
+            )
+                .into_response();
         }
     };
 
     // Validate ID token
     let id_token_jwt = match &token_resp.id_token {
         Some(t) => t.as_str(),
-        None => return (StatusCode::BAD_GATEWAY, "Peer did not return an ID token").into_response(),
+        None => {
+            return (StatusCode::BAD_GATEWAY, "Peer did not return an ID token").into_response()
+        }
     };
 
     let claims = match rp_client.validate_id_token(id_token_jwt, &peer, &fed_req.nonce) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("ID token validation failed: {}", e);
-            return (StatusCode::BAD_GATEWAY, format!("Invalid ID token from peer: {}", e)).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("Invalid ID token from peer: {}", e),
+            )
+                .into_response();
         }
     };
 
     // Optionally fetch userinfo for additional claims
     let userinfo = if peer.userinfo_endpoint.is_some() {
-        rp_client.fetch_userinfo(&peer, &token_resp.access_token).await.ok()
+        rp_client
+            .fetch_userinfo(&peer, &token_resp.access_token)
+            .await
+            .ok()
     } else {
         None
     };
 
-    let email = claims.email.as_deref()
+    let email = claims
+        .email
+        .as_deref()
         .or(userinfo.as_ref().and_then(|u| u.email.as_deref()));
     let email_verified = claims.email_verified.unwrap_or(false);
-    let name = claims.name.as_deref()
+    let name = claims
+        .name
+        .as_deref()
         .or(userinfo.as_ref().and_then(|u| u.name.as_deref()));
 
     // Resolve federated identity → local user
@@ -4237,7 +4280,11 @@ async fn federation_callback(
         Ok(uid) => uid,
         Err(e) => {
             tracing::warn!("Federated identity resolution failed: {}", e);
-            return (StatusCode::FORBIDDEN, format!("Cannot resolve federated identity: {}", e)).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                format!("Cannot resolve federated identity: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -4274,22 +4321,31 @@ async fn federation_callback(
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Failed to create session for federated user: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create session").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create session",
+            )
+                .into_response();
         }
     };
     let session_id = session.session_id.clone();
 
     // Update session with federation AMR/ACR
     let _ = storage::update_session_auth_context(
-        &state.db, &session_id, Some(&amr), Some(&acr), Some(true),
-    ).await;
+        &state.db,
+        &session_id,
+        Some(&amr),
+        Some(&acr),
+        Some(true),
+    )
+    .await;
 
     // Delete the federation auth request (single-use)
     let _ = fed_storage::delete_federation_auth_request(&state.db, &fed_req.id).await;
 
     // Resume the original OIDC flow by redirecting back to /authorize with the original params
-    let original_params: serde_json::Value = serde_json::from_str(&fed_req.original_authorize_params)
-        .unwrap_or_default();
+    let original_params: serde_json::Value =
+        serde_json::from_str(&fed_req.original_authorize_params).unwrap_or_default();
 
     let mut authorize_url = "/authorize?".to_string();
     if let Some(obj) = original_params.as_object() {
@@ -4311,7 +4367,10 @@ async fn federation_callback(
     );
 
     // Set session cookie and redirect to /authorize
-    let cookie = format!("session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}", session_id, session_ttl);
+    let cookie = format!(
+        "session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        session_id, session_ttl
+    );
     let mut response = Redirect::temporary(&authorize_url).into_response();
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
@@ -4329,10 +4388,7 @@ async fn federation_callback(
 /// Receives a signed JWS from a remote peer requesting mutual peering.
 /// The JWS is verified against the sender's published JWKS and stored
 /// as a `pending_approval` peer request for admin review.
-async fn federation_peer_request(
-    State(state): State<AppState>,
-    body: String,
-) -> impl IntoResponse {
+async fn federation_peer_request(State(state): State<AppState>, body: String) -> impl IntoResponse {
     if !state.settings.federation.enabled {
         return (
             StatusCode::NOT_FOUND,
@@ -4375,10 +4431,7 @@ async fn federation_peer_request(
 /// Receives a signed JWS from a remote peer confirming that they have
 /// approved our peering request. Verifies the signature, looks up our
 /// pending_mutual peer, and activates it.
-async fn federation_peer_confirm(
-    State(state): State<AppState>,
-    body: String,
-) -> impl IntoResponse {
+async fn federation_peer_confirm(State(state): State<AppState>, body: String) -> impl IntoResponse {
     if !state.settings.federation.enabled {
         return (
             StatusCode::NOT_FOUND,
@@ -4387,8 +4440,7 @@ async fn federation_peer_confirm(
             .into_response();
     }
 
-    match crate::federation::peering::handle_peer_confirm(&state.db, &state.settings, &body).await
-    {
+    match crate::federation::peering::handle_peer_confirm(&state.db, &state.settings, &body).await {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "confirmed"}))).into_response(),
         Err(e) => {
             tracing::warn!("peer-confirm rejected: {}", e);

@@ -93,11 +93,19 @@ impl WebFinger {
         if let Some(ref path) = self.service_token_file {
             std::fs::read_to_string(path)
                 .map(|s| s.trim().to_string())
-                .map_err(|e| miette::miette!("Failed to read webfinger service_token_file {:?}: {}", path, e))
+                .map_err(|e| {
+                    miette::miette!(
+                        "Failed to read webfinger service_token_file {:?}: {}",
+                        path,
+                        e
+                    )
+                })
         } else if !self.service_token.is_empty() {
             Ok(self.service_token.clone())
         } else {
-            Err(miette::miette!("WebFinger enabled but no service_token or service_token_file configured"))
+            Err(miette::miette!(
+                "WebFinger enabled but no service_token or service_token_file configured"
+            ))
         }
     }
 }
@@ -108,7 +116,14 @@ impl std::fmt::Debug for WebFinger {
         f.debug_struct("WebFinger")
             .field("enabled", &self.enabled)
             .field("base_url", &self.base_url)
-            .field("service_token", &if self.service_token.is_empty() { "<empty>" } else { "<redacted>" })
+            .field(
+                "service_token",
+                &if self.service_token.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
             .field("service_token_file", &self.service_token_file)
             .field("resource_domain", &self.resource_domain)
             .finish()

@@ -23,11 +23,7 @@ async fn setup_test_db() -> (DatabaseConnection, NamedTempFile) {
 }
 
 /// Create a trusted peer in the database and return its ID.
-async fn create_test_peer(
-    db: &DatabaseConnection,
-    domain: &str,
-    mapping_policy: &str,
-) -> String {
+async fn create_test_peer(db: &DatabaseConnection, domain: &str, mapping_policy: &str) -> String {
     fed_storage::create_trusted_peer(
         db,
         domain,
@@ -83,7 +79,10 @@ async fn test_federation_peer_lifecycle() {
     let suspended = fed_storage::get_active_trusted_peer_by_domain(&db, "peer.example.com")
         .await
         .unwrap();
-    assert!(suspended.is_none(), "suspended peer should not be found via active query");
+    assert!(
+        suspended.is_none(),
+        "suspended peer should not be found via active query"
+    );
 
     // 7. Reactivate and verify.
     fed_storage::update_trusted_peer_status(&db, &peer_id, "active")
@@ -95,7 +94,9 @@ async fn test_federation_peer_lifecycle() {
     assert!(reactivated.is_some(), "reactivated peer should be found");
 
     // 8. Delete and verify gone.
-    fed_storage::delete_trusted_peer(&db, &peer_id).await.unwrap();
+    fed_storage::delete_trusted_peer(&db, &peer_id)
+        .await
+        .unwrap();
     let deleted = fed_storage::get_trusted_peer_by_domain(&db, "peer.example.com")
         .await
         .unwrap();
@@ -245,9 +246,14 @@ async fn test_federation_identity_linking() {
         .await
         .unwrap();
 
-    let user = storage::create_user(&db, "localuser", "password123", Some("local@example.com".to_string()))
-        .await
-        .unwrap();
+    let user = storage::create_user(
+        &db,
+        "localuser",
+        "password123",
+        Some("local@example.com".to_string()),
+    )
+    .await
+    .unwrap();
 
     // 1. Link a federated identity.
     let link_id = fed_storage::link_federated_identity(
@@ -272,7 +278,10 @@ async fn test_federation_identity_linking() {
     assert_eq!(found.local_user_id, user.subject);
     assert_eq!(found.external_subject, "external-sub-123");
     assert_eq!(found.external_issuer, "https://peer.example.com");
-    assert_eq!(found.external_email.as_deref(), Some("external@peer.example.com"));
+    assert_eq!(
+        found.external_email.as_deref(),
+        Some("external@peer.example.com")
+    );
     assert!(found.last_login_at.is_none());
 
     // 4. List federated identities for the local user.
@@ -342,7 +351,10 @@ async fn test_federation_identity_resolution_policies() {
     .await;
     assert!(result.is_err(), "existing_only should fail with no link");
     assert!(
-        matches!(result.unwrap_err(), IdentityResolutionError::NoExistingLink { .. }),
+        matches!(
+            result.unwrap_err(),
+            IdentityResolutionError::NoExistingLink { .. }
+        ),
         "should be NoExistingLink error"
     );
 
@@ -409,7 +421,10 @@ async fn test_federation_identity_resolution_policies() {
     .await;
     assert!(result4.is_err(), "should fail with unverified email");
     assert!(
-        matches!(result4.unwrap_err(), IdentityResolutionError::EmailNotVerified),
+        matches!(
+            result4.unwrap_err(),
+            IdentityResolutionError::EmailNotVerified
+        ),
         "should be EmailNotVerified error"
     );
 
@@ -547,7 +562,11 @@ async fn test_federation_peer_request_lifecycle() {
 
     // 4. List pending — should have 0.
     let pending_after = fed_storage::list_pending_peer_requests(&db).await.unwrap();
-    assert_eq!(pending_after.len(), 0, "approved request should not appear in pending list");
+    assert_eq!(
+        pending_after.len(),
+        0,
+        "approved request should not appear in pending list"
+    );
 
     // Verify the request still exists with updated status.
     let approved = fed_storage::get_peer_request(&db, &req_id)
@@ -575,7 +594,11 @@ async fn test_federation_peer_request_lifecycle() {
 
     // 6. Verify rejected requests don't show in pending list.
     let pending_final = fed_storage::list_pending_peer_requests(&db).await.unwrap();
-    assert_eq!(pending_final.len(), 0, "rejected request should not appear in pending list");
+    assert_eq!(
+        pending_final.len(),
+        0,
+        "rejected request should not appear in pending list"
+    );
 
     let rejected = fed_storage::get_peer_request(&db, &req_id2)
         .await
@@ -617,9 +640,9 @@ async fn test_federation_amr_acr_propagation() {
     storage::update_session_auth_context(
         &db,
         &session.session_id,
-        Some("fed"),           // federated authentication
-        Some("aal1"),          // single factor via federation
-        Some(false),           // not MFA verified yet
+        Some("fed"),  // federated authentication
+        Some("aal1"), // single factor via federation
+        Some(false),  // not MFA verified yet
     )
     .await
     .unwrap();
@@ -636,9 +659,9 @@ async fn test_federation_amr_acr_propagation() {
     storage::update_session_auth_context(
         &db,
         &session.session_id,
-        Some("fed,hwk"),       // federated + hardware key
-        Some("aal2"),          // two-factor
-        Some(true),            // MFA verified
+        Some("fed,hwk"), // federated + hardware key
+        Some("aal2"),    // two-factor
+        Some(true),      // MFA verified
     )
     .await
     .unwrap();
