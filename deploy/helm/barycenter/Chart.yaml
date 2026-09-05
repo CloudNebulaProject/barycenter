@@ -2,8 +2,8 @@ apiVersion: v2
 name: barycenter
 description: OpenID Connect Identity Provider with federation and auto-registration
 type: application
-version: "0.2.0-beta.8"
-appVersion: "0.2.0-beta.8"
+version: "0.2.0-beta.9"
+appVersion: "0.2.0-beta.9"
 keywords:
   - openid
   - oauth2
