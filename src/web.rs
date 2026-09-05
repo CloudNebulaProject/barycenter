@@ -2602,7 +2602,7 @@ async fn login_submit(
                 // Redirect back to login with error
                 let return_to = urlencoded(&form.return_to.unwrap_or_default());
                 let error = urlencoded("Invalid username or password");
-                return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                     .into_response();
             }
         };
@@ -2613,7 +2613,7 @@ async fn login_submit(
         _ => {
             let return_to = urlencoded(&form.return_to.unwrap_or_default());
             let error = urlencoded("User not found");
-            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+            return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                 .into_response();
         }
     };
@@ -2631,7 +2631,7 @@ async fn login_submit(
             Err(_) => {
                 let return_to = urlencoded(&form.return_to.unwrap_or_default());
                 let error = urlencoded("Failed to create session");
-                return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                     .into_response();
             }
         };
