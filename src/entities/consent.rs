@@ -12,7 +12,8 @@ pub struct Model {
     pub scope: String,
     pub granted_at: i64,
     pub expires_at: Option<i64>,
-    pub revoked: i64,
+    /// Backed by the migration's PostgreSQL `INTEGER` (`INT4`) column.
+    pub revoked: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
