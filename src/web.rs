@@ -81,10 +81,7 @@ async fn gather_claims(
                 if let Some(val) = props.get(claim) {
                     claims.insert(claim.to_string(), val.clone());
                 } else if let Some(ref u) = user {
-                    claims.insert(
-                        claim.to_string(),
-                        Value::String(u.username.clone()),
-                    );
+                    claims.insert(claim.to_string(), Value::String(u.username.clone()));
                 }
             } else if let Some(val) = props.get(claim) {
                 claims.insert(claim.to_string(), val.clone());
@@ -2229,10 +2226,7 @@ async fn userinfo(
         Ok(c) => c,
         Err(_) => {
             let mut c = serde_json::Map::new();
-            c.insert(
-                "sub".to_string(),
-                Value::String(token_row.subject.clone()),
-            );
+            c.insert("sub".to_string(), Value::String(token_row.subject.clone()));
             c
         }
     };
@@ -2584,7 +2578,7 @@ async fn login_submit(
                 // Redirect back to login with error
                 let return_to = urlencoded(&form.return_to.unwrap_or_default());
                 let error = urlencoded("Invalid username or password");
-                return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                     .into_response();
             }
         };
@@ -2595,7 +2589,7 @@ async fn login_submit(
         _ => {
             let return_to = urlencoded(&form.return_to.unwrap_or_default());
             let error = urlencoded("User not found");
-            return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+            return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                 .into_response();
         }
     };
@@ -2613,7 +2607,7 @@ async fn login_submit(
             Err(_) => {
                 let return_to = urlencoded(&form.return_to.unwrap_or_default());
                 let error = urlencoded("Failed to create session");
-                return Redirect::temporary(&format!("/login?error={error}&return_to={return_to}"))
+                return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                     .into_response();
             }
         };

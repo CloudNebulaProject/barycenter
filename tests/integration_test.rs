@@ -8,11 +8,31 @@ use std::time::Duration;
 struct TestServer {
     process: Child,
     base_url: String,
+    _temp_dir: tempfile::TempDir,
 }
 
 impl TestServer {
     fn start() -> Self {
-        let port = 8080;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("Failed to reserve a test server port");
+        let port = listener
+            .local_addr()
+            .expect("Failed to read reserved test server port")
+            .port();
+        let admin_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("Failed to reserve a test admin port");
+        let admin_port = admin_listener
+            .local_addr()
+            .expect("Failed to read reserved test admin port")
+            .port();
+        drop(listener);
+        drop(admin_listener);
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create test server directory");
+        let database_url = format!(
+            "sqlite://{}?mode=rwc",
+            temp_dir.path().join("barycenter.db").display()
+        );
         let base_url = format!("http://localhost:{}", port);
 
         // Use the pre-built binary from target/debug instead of recompiling with cargo run
@@ -34,6 +54,17 @@ impl TestServer {
         // Use piped stderr so we can capture errors if server fails to start
         let mut process = Command::new(&binary_path)
             .env("RUST_LOG", "error")
+            .env("BARYCENTER__SERVER__PORT", port.to_string())
+            .env("BARYCENTER__SERVER__ADMIN_PORT", admin_port.to_string())
+            .env("BARYCENTER__DATABASE__URL", database_url)
+            .env(
+                "BARYCENTER__KEYS__JWKS_PATH",
+                temp_dir.path().join("jwks.json"),
+            )
+            .env(
+                "BARYCENTER__KEYS__PRIVATE_KEY_PATH",
+                temp_dir.path().join("private_key.pem"),
+            )
             .env("BARYCENTER__SERVER__ALLOW_PUBLIC_REGISTRATION", "true") // Enable registration for tests
             .env("BARYCENTER__SERVER__PUBLIC_BASE_URL", &base_url) // Set public base URL for WebAuthn
             .env("BARYCENTER_SKIP_CONSENT", "1") // Skip consent for tests
@@ -55,7 +86,11 @@ impl TestServer {
                 .is_ok()
             {
                 println!("Server started successfully");
-                return Self { process, base_url };
+                return Self {
+                    process,
+                    base_url,
+                    _temp_dir: temp_dir,
+                };
             }
             if i < max_retries - 1 {
                 thread::sleep(Duration::from_secs(1));
@@ -150,6 +185,44 @@ fn login_and_get_client(
         .expect("Failed to login");
 
     (client, jar)
+}
+
+#[test]
+fn invalid_login_redirects_with_see_other_and_renders_error() {
+    let server = TestServer::start();
+    let client = reqwest::blocking::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Failed to build client");
+
+    let response = client
+        .post(format!("{}/login", server.base_url()))
+        .form(&[
+            ("username", "unknown-user"),
+            ("password", "wrong-password"),
+            ("return_to", "/authorize?client_id=test-client"),
+        ])
+        .send()
+        .expect("Failed to submit invalid login");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("Invalid login response did not include a Location header");
+    assert!(location.starts_with("/login?error=Invalid+username+or+password&return_to="));
+
+    let error_page = client
+        .get(format!("{}{}", server.base_url(), location))
+        .send()
+        .expect("Failed to load login error page");
+    assert_eq!(error_page.status(), reqwest::StatusCode::OK);
+    assert!(error_page
+        .text()
+        .expect("Failed to read login error page")
+        .contains("Invalid username or password"));
 }
 
 #[test]
