@@ -205,14 +205,14 @@
 
         <div class="consent-body">
             <div class="client-info">
-                <h2 id="clientName"><!-- Client name inserted here --></h2>
+                <h2>{{CLIENT_NAME}}</h2>
                 <p>This application is requesting access to your account.</p>
             </div>
 
             <div class="scopes-section">
                 <h3>Requested Permissions:</h3>
-                <ul class="scope-list" id="scopesList">
-                    <!-- Scopes inserted dynamically -->
+                <ul class="scope-list">
+                    {{SCOPE_ITEMS}}
                 </ul>
             </div>
 
@@ -224,14 +224,14 @@
             </div>
 
             <form method="POST" action="/consent">
-                <input type="hidden" name="client_id" id="clientId">
-                <input type="hidden" name="scope" id="scope">
-                <input type="hidden" name="state" id="state">
-                <input type="hidden" name="redirect_uri" id="redirectUri">
-                <input type="hidden" name="response_type" id="responseType">
-                <input type="hidden" name="code_challenge" id="codeChallenge">
-                <input type="hidden" name="code_challenge_method" id="codeChallengeMethod">
-                <input type="hidden" name="nonce" id="nonce">
+                <input type="hidden" name="client_id" value="{{CLIENT_ID}}">
+                <input type="hidden" name="scope" value="{{SCOPE}}">
+                <input type="hidden" name="state" value="{{STATE}}">
+                <input type="hidden" name="redirect_uri" value="{{REDIRECT_URI}}">
+                <input type="hidden" name="response_type" value="{{RESPONSE_TYPE}}">
+                <input type="hidden" name="code_challenge" value="{{CODE_CHALLENGE}}">
+                <input type="hidden" name="code_challenge_method" value="{{CODE_CHALLENGE_METHOD}}">
+                <input type="hidden" name="nonce" value="{{NONCE}}">
 
                 <div class="action-buttons">
                     <button type="submit" name="action" value="deny" class="btn-deny">
@@ -245,67 +245,8 @@
         </div>
 
         <div class="user-info">
-            Logged in as <strong id="username"><!-- Username inserted here --></strong>
+            Logged in as <strong>{{USERNAME}}</strong>
         </div>
     </div>
-
-    <script>
-        // Parse query parameters
-        const params = new URLSearchParams(window.location.search);
-        const clientName = params.get('client_name') || 'Unknown Application';
-        const clientId = params.get('client_id') || '';
-        const scope = params.get('scope') || '';
-        const state = params.get('state') || '';
-        const redirectUri = params.get('redirect_uri') || '';
-        const responseType = params.get('response_type') || '';
-        const codeChallenge = params.get('code_challenge') || '';
-        const codeChallengeMethod = params.get('code_challenge_method') || '';
-        const nonce = params.get('nonce') || '';
-        const username = params.get('username') || 'User';
-
-        // Update UI
-        document.getElementById('clientName').textContent = clientName;
-        document.getElementById('clientId').value = clientId;
-        document.getElementById('scope').value = scope;
-        document.getElementById('state').value = state;
-        document.getElementById('redirectUri').value = redirectUri;
-        document.getElementById('responseType').value = responseType;
-        document.getElementById('codeChallenge').value = codeChallenge;
-        document.getElementById('codeChallengeMethod').value = codeChallengeMethod;
-        document.getElementById('nonce').value = nonce;
-        document.getElementById('username').textContent = username;
-
-        // Scope descriptions
-        const scopeDescriptions = {
-            'openid': { name: 'OpenID Connect', desc: 'Basic user identity information' },
-            'profile': { name: 'Profile Information', desc: 'Your name and basic profile' },
-            'email': { name: 'Email Address', desc: 'Your email address' },
-            'phone': { name: 'Phone Number', desc: 'Your phone number' },
-            'address': { name: 'Address', desc: 'Your postal address' },
-            'offline_access': { name: 'Offline Access', desc: 'Access when you\'re not present' },
-            'admin': { name: 'Admin Access', desc: '⚠️ Full administrative privileges' },
-            'payment': { name: 'Payment Access', desc: '⚠️ Initiate payments' },
-            'transfer': { name: 'Transfer Access', desc: '⚠️ Transfer funds' },
-            'delete': { name: 'Delete Access', desc: '⚠️ Delete data' },
-        };
-
-        // Render scopes
-        const scopesList = document.getElementById('scopesList');
-        const scopes = scope.split(' ').filter(s => s);
-
-        scopes.forEach(s => {
-            const li = document.createElement('li');
-            li.className = 'scope-item';
-
-            const scopeInfo = scopeDescriptions[s] || { name: s, desc: '' };
-            li.innerHTML = `
-                <span>
-                    <strong>${scopeInfo.name}</strong>
-                    ${scopeInfo.desc ? `<div class="scope-description">${scopeInfo.desc}</div>` : ''}
-                </span>
-            `;
-            scopesList.appendChild(li);
-        });
-    </script>
 </body>
 </html>

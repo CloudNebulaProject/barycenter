@@ -11,6 +11,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migration ./migration
 COPY client-wasm ./client-wasm
+COPY static ./static
 
 # Build release binary with platform-specific caches to avoid race conditions
 ARG TARGETPLATFORM

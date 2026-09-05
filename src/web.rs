@@ -427,7 +427,10 @@ fn oauth_error_redirect(
         params.push(("state", s.to_string()));
     }
     let loc = url_append_query(redirect_uri.to_string(), &params);
-    axum::response::Redirect::temporary(&loc)
+    // Error redirects can also be emitted after a form POST (for example,
+    // consent denial), so use 303 to prevent the user agent replaying the POST
+    // against the client callback.
+    axum::response::Redirect::to(&loc)
 }
 
 // OIDC-specific error codes per OpenID Connect Core 1.0 Section 3.1.2.6
@@ -951,7 +954,6 @@ async fn authorize(
 #[derive(Debug, Deserialize)]
 struct ConsentQuery {
     client_id: String,
-    client_name: Option<String>,
     scope: String,
     redirect_uri: String,
     response_type: String,
@@ -1032,68 +1034,21 @@ async fn consent_page(
     };
 
     // Get client name
-    let client_name = if let Some(name) = q.client_name {
-        name
-    } else {
-        match storage::get_client(&state.db, &q.client_id).await {
-            Ok(Some(client)) => client.client_name.unwrap_or_else(|| q.client_id.clone()),
-            _ => q.client_id.clone(),
-        }
+    let client_name = match storage::get_client(&state.db, &q.client_id).await {
+        Ok(Some(client)) => client.client_name.unwrap_or_else(|| q.client_id.clone()),
+        _ => q.client_id.clone(),
     };
 
-    // Serve the static consent.html file with query parameters
-    match tokio::fs::read_to_string("static/consent.html").await {
-        Ok(html) => {
-            // Build query string for the consent page
-            let mut params = vec![
-                ("client_id", q.client_id.clone()),
-                ("client_name", client_name),
-                ("scope", q.scope.clone()),
-                ("redirect_uri", q.redirect_uri.clone()),
-                ("response_type", q.response_type.clone()),
-                ("username", username),
-            ];
-
-            if let Some(s) = &q.state {
-                params.push(("state", s.clone()));
-            }
-            if let Some(n) = &q.nonce {
-                params.push(("nonce", n.clone()));
-            }
-            if let Some(cc) = &q.code_challenge {
-                params.push(("code_challenge", cc.clone()));
-            }
-            if let Some(ccm) = &q.code_challenge_method {
-                params.push(("code_challenge_method", ccm.clone()));
-            }
-
-            // Append query parameters to HTML
-            let query_string = serde_urlencoded::to_string(&params).unwrap_or_default();
-            let html_with_params = if html.contains("</body>") {
-                html.replace(
-                    "</body>",
-                    &format!(
-                        "<script>window.location.search = '?{}';</script></body>",
-                        query_string
-                    ),
-                )
-            } else {
-                html
-            };
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "text/html; charset=utf-8")
-                .body(Body::from(html_with_params))
-                .unwrap()
-                .into_response()
-        }
-        Err(_) => Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::from("Consent page not found"))
-            .unwrap()
-            .into_response(),
-    }
+    // Render the consent page on the server. The template is embedded in the
+    // binary so packaged deployments cannot lose it, and no inline JavaScript
+    // is needed under the application's Content-Security-Policy.
+    let html = render_consent_html(&q, &client_name, &username);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap()
+        .into_response()
 }
 
 async fn consent_submit(
@@ -1188,7 +1143,9 @@ async fn consent_submit(
                 .collect::<Vec<_>>(),
         );
 
-        return Redirect::temporary(&authorize_url).into_response();
+        // Consent is submitted with POST; 303 makes the next authorization
+        // request a GET instead of replaying the form body.
+        return Redirect::to(&authorize_url).into_response();
     }
 
     // Invalid action
@@ -2432,7 +2389,9 @@ async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
         String::new()
     };
 
-    let return_to = q.return_to.unwrap_or_default();
+    let return_to = safe_local_return_to(q.return_to.as_deref());
+    let return_to_escaped = html_escape(&return_to);
+    let return_to_json = serde_json::to_string(&return_to).unwrap_or_else(|_| "\"/\"".to_string());
 
     let html = format!(
         r#"
@@ -2506,7 +2465,7 @@ async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
                                     headers: {{ 'Content-Type': 'application/json' }},
                                     body: JSON.stringify({{
                                         credential: credential,
-                                        return_to: '{return_to}'
+                                        return_to: {return_to_json}
                                     }})
                                 }});
 
@@ -2538,7 +2497,7 @@ async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
             {error_html}
             <div id="passkey-status"></div>
             <form method="POST" action="/login">
-                <input type="hidden" name="return_to" value="{return_to}">
+                <input type="hidden" name="return_to" value="{return_to_escaped}">
                 <label>
                     Username:
                     <input type="text" id="username" name="username" required autofocus>
@@ -2602,13 +2561,15 @@ async fn login_submit(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
+    let return_to = safe_local_return_to(form.return_to.as_deref());
+
     // Verify credentials
     let subject =
         match storage::verify_user_password(&state.db, &form.username, &form.password).await {
             Ok(Some(sub)) => sub,
             _ => {
                 // Redirect back to login with error
-                let return_to = urlencoded(&form.return_to.unwrap_or_default());
+                let return_to = urlencoded(&return_to);
                 let error = urlencoded("Invalid username or password");
                 return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                     .into_response();
@@ -2619,7 +2580,7 @@ async fn login_submit(
     let user = match storage::get_user_by_subject(&state.db, &subject).await {
         Ok(Some(u)) => u,
         _ => {
-            let return_to = urlencoded(&form.return_to.unwrap_or_default());
+            let return_to = urlencoded(&return_to);
             let error = urlencoded("User not found");
             return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                 .into_response();
@@ -2637,7 +2598,7 @@ async fn login_submit(
         match storage::create_session(&state.db, &subject, now, 3600, user_agent, None).await {
             Ok(s) => s,
             Err(_) => {
-                let return_to = urlencoded(&form.return_to.unwrap_or_default());
+                let return_to = urlencoded(&return_to);
                 let error = urlencoded("Failed to create session");
                 return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
                     .into_response();
@@ -2651,11 +2612,11 @@ async fn login_submit(
     // If user requires 2FA, redirect to 2FA page with partial session
     let redirect_url = if user.requires_2fa == 1 {
         // Partial session - redirect to 2FA
-        let return_to = urlencoded(&form.return_to.unwrap_or_default());
+        let return_to = urlencoded(&return_to);
         format!("/login/2fa?return_to={return_to}")
     } else {
         // Full session - redirect to destination
-        form.return_to.unwrap_or_else(|| "/".to_string())
+        return_to
     };
 
     Response::builder()
@@ -2700,7 +2661,7 @@ async fn login_2fa_page(
         }
     };
 
-    let return_to = q.return_to.unwrap_or_else(|| "/".to_string());
+    let return_to = safe_local_return_to(q.return_to.as_deref());
     let return_to_escaped = html_escape(&return_to);
     let error_html = q
         .error
@@ -2799,11 +2760,88 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+fn render_consent_scope_items(scope: &str) -> String {
+    scope
+        .split_whitespace()
+        .map(|scope_name| {
+            let (display_name, description) = match scope_name {
+                "openid" => ("OpenID Connect", "Basic user identity information"),
+                "profile" => ("Profile Information", "Your name and basic profile"),
+                "email" => ("Email Address", "Your email address"),
+                "phone" => ("Phone Number", "Your phone number"),
+                "address" => ("Address", "Your postal address"),
+                "offline_access" => ("Offline Access", "Access when you're not present"),
+                "admin" => ("Admin Access", "Full administrative privileges"),
+                "payment" => ("Payment Access", "Initiate payments"),
+                "transfer" => ("Transfer Access", "Transfer funds"),
+                "delete" => ("Delete Access", "Delete data"),
+                _ => (scope_name, ""),
+            };
+            let description = if description.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    r#"<div class="scope-description">{}</div>"#,
+                    html_escape(description)
+                )
+            };
+
+            format!(
+                r#"<li class="scope-item"><span><strong>{}</strong>{}</span></li>"#,
+                html_escape(display_name),
+                description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_consent_html(q: &ConsentQuery, client_name: &str, username: &str) -> String {
+    let values = [
+        ("{{CLIENT_NAME}}", client_name),
+        ("{{CLIENT_ID}}", q.client_id.as_str()),
+        ("{{SCOPE}}", q.scope.as_str()),
+        ("{{STATE}}", q.state.as_deref().unwrap_or_default()),
+        ("{{REDIRECT_URI}}", q.redirect_uri.as_str()),
+        ("{{RESPONSE_TYPE}}", q.response_type.as_str()),
+        (
+            "{{CODE_CHALLENGE}}",
+            q.code_challenge.as_deref().unwrap_or_default(),
+        ),
+        (
+            "{{CODE_CHALLENGE_METHOD}}",
+            q.code_challenge_method.as_deref().unwrap_or_default(),
+        ),
+        ("{{NONCE}}", q.nonce.as_deref().unwrap_or_default()),
+        ("{{USERNAME}}", username),
+    ];
+
+    let rendered = values.into_iter().fold(
+        include_str!("../static/consent.html").to_string(),
+        |html, (placeholder, value)| html.replace(placeholder, &html_escape(value)),
+    );
+
+    rendered.replace("{{SCOPE_ITEMS}}", &render_consent_scope_items(&q.scope))
+}
+
 fn urlencoded(s: &str) -> String {
     serde_urlencoded::to_string([("", s)])
         .unwrap_or_default()
         .trim_start_matches('=')
         .to_string()
+}
+
+fn safe_local_return_to(return_to: Option<&str>) -> String {
+    let candidate = return_to.unwrap_or("/");
+    if candidate.starts_with('/')
+        && !candidate.starts_with("//")
+        && !candidate.contains('\\')
+        && HeaderValue::from_str(candidate).is_ok()
+    {
+        candidate.to_string()
+    } else {
+        "/".to_string()
+    }
 }
 
 // ============================================================================
@@ -3218,7 +3256,7 @@ async fn passkey_auth_finish(
     // Set session cookie and redirect
     let cookie = SessionCookie::new(session.session_id);
     let cookie_header = cookie.to_cookie_header(&state.settings);
-    let redirect_url = req.return_to.unwrap_or_else(|| "/".to_string());
+    let redirect_url = safe_local_return_to(req.return_to.as_deref());
 
     Ok(Response::builder()
         .status(StatusCode::SEE_OTHER)
