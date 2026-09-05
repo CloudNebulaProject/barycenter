@@ -1,7 +1,9 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "consents")]
+// Keep this aligned with `Consent::Table` in the existing consent migration,
+// which created the table as the singular `consent`.
+#[sea_orm(table_name = "consent")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,

@@ -39,7 +39,24 @@ async fn main() -> Result<()> {
 
     // load settings
     let settings = settings::Settings::load(&cli.config)?;
-    tracing::info!(?settings, "Loaded configuration");
+    let database_backend = match settings
+        .database
+        .url
+        .split_once(':')
+        .map(|(scheme, _)| scheme)
+    {
+        Some("postgres") | Some("postgresql") => "postgresql",
+        Some("sqlite") => "sqlite",
+        _ => "unknown",
+    };
+    tracing::info!(
+        server_host = %settings.server.host,
+        server_port = settings.server.port,
+        public_base_url = ?settings.server.public_base_url,
+        database_backend,
+        signing_algorithm = %settings.keys.alg,
+        "Loaded configuration"
+    );
 
     // init storage (database)
     let db = storage::init(&settings.database).await?;
