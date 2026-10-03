@@ -33,3 +33,5 @@ pub use user::Entity as User;
 pub use webauthn_challenge::Entity as WebauthnChallenge;
 
 pub mod onboarding_invitation;
+
+pub mod password_reset;

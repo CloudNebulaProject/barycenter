@@ -5,7 +5,11 @@ This guide walks through the process of establishing a bilateral trust relations
 - **aopc.cloud** -- Admin A's instance, running at `https://auth.aopc.cloud`
 - **wegmueller.it** -- Admin B's instance, running at `https://auth.wegmueller.it`
 
-Both instances must have WebFinger and federation enabled before proceeding. See [Setting Up WebFinger](setting-up-webfingerd.md) if you have not completed that step.
+Both instances must have federation enabled and authoritative WebFinger routes.
+Barycenter now serves `/.well-known/webfinger` itself when `webfinger.resource_domain`
+is configured. Route that exact path from the owned apex domain to its issuer.
+Keep `webfinger.enabled=false` when no external registrar is used; that switch
+controls registration with webfingerd, not the built-in responder. See [Setting Up WebFinger](setting-up-webfingerd.md) if you have not completed that step.
 
 ## Overview
 

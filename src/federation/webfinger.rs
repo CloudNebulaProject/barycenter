@@ -167,9 +167,14 @@ impl WebFingerClient {
         };
 
         for link in links {
+            if link.rel == ENTITY_PROOF_REL {
+                if let Some(href) = &link.href {
+                    return Ok(Some(href.clone()));
+                }
+            }
             if let Some(props) = &link.properties {
-                if props.contains_key(ENTITY_PROOF_REL) {
-                    return Ok(link.href.clone());
+                if let Some(Some(href)) = props.get(ENTITY_PROOF_REL) {
+                    return Ok(Some(href.clone()));
                 }
             }
         }

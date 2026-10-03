@@ -58,6 +58,30 @@ class AdminTests(unittest.TestCase):
                 self.assertEqual(admin.main(['--config', str(config), 'send', '--receipt', str(receipt)]), 0)
                 request.assert_not_called()
 
+    def reset_receipt(self):
+        r = self.receipt(); r['kind'] = 'password-reset'
+        r['reset_url'] = r.pop('onboarding_url').replace('/onboarding', '/password-reset')
+        return r
+
+    def test_reset_email_is_sent_only_to_server_verified_recipient(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'config.json'
+            config.write_text(json.dumps({'public_url': 'https://auth.example.test', 'receipt_dir': str(Path(directory) / 'receipts'), 'smtp': {'password_file': 'not-read'}})); config.chmod(0o600)
+            with patch.object(admin, 'request', return_value=self.reset_receipt()) as request, patch.object(admin, 'secret', return_value='private-password'), patch.object(admin, 'send') as send:
+                self.assertEqual(admin.main(['--config', str(config), 'reset-password', 'alice']), 0)
+                self.assertEqual(request.call_args.args[2], '/admin/password-resets')
+                self.assertEqual(request.call_args.args[3], {'username': 'alice', 'expires_in': 3600})
+                self.assertEqual(send.call_args.args[1]['email'], 'alice@example.test')
+                self.assertEqual(send.call_args.args[1]['kind'], 'password-reset')
+
+    def test_reset_receipt_cannot_be_repurposed_as_invitation(self):
+        config = {'public_url': 'https://auth.example.test'}
+        r = self.reset_receipt(); admin.validate_receipt(config, r)
+        r['reset_url'] = r['reset_url'].replace('/password-reset', '/onboarding')
+        with self.assertRaises(admin.Failure): admin.validate_receipt(config, r)
+        r['kind'] = 'unknown'
+        with self.assertRaises(admin.Failure): admin.validate_receipt(config, r)
+
     def test_redirects_never_forward_admin_credential(self):
         with self.assertRaises(admin.Failure): admin.NoRedirect().redirect_request(None, None, None, None, None, None)
 

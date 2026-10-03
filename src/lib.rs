@@ -19,3 +19,5 @@ pub mod web;
 pub mod webauthn_manager;
 
 pub mod onboarding;
+
+pub mod password_reset;

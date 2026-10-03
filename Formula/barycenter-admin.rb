@@ -1,7 +1,7 @@
 class BarycenterAdmin < Formula
-  desc "Issue and email single-use Barycenter account invitations"
+  desc "Email Barycenter invitations and password reset links"
   homepage "https://github.com/CloudNebulaProject/barycenter"
-  head "https://github.com/CloudNebulaProject/barycenter.git", branch: "feature/email-onboarding"
+  head "https://github.com/CloudNebulaProject/barycenter.git", branch: "main"
   license any_of: ["MIT", "Apache-2.0"]
   depends_on "python@3.14"
 

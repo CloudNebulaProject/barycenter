@@ -11,6 +11,8 @@ mod m20260407_000002_create_peer_requests;
 
 mod m20261003_000001_onboarding_invitations;
 
+mod m20261003_000002_password_resets;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -26,6 +28,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260407_000001_create_federation_tables::Migration),
             Box::new(m20260407_000002_create_peer_requests::Migration),
             Box::new(m20261003_000001_onboarding_invitations::Migration),
+            Box::new(m20261003_000002_password_resets::Migration),
         ]
     }
 }

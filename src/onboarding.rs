@@ -30,12 +30,12 @@ fn digest(value: &str) -> String {
         .collect()
 }
 #[derive(Clone)]
-struct AdminState {
-    db: DatabaseConnection,
-    base: String,
+pub(crate) struct AdminState {
+    pub(crate) db: DatabaseConnection,
+    pub(crate) base: String,
     token_hash: [u8; 32],
 }
-fn authorize(headers: &HeaderMap, state: &AdminState) -> Result<(), ApiError> {
+pub(crate) fn authorize(headers: &HeaderMap, state: &AdminState) -> Result<(), ApiError> {
     let provided = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -79,6 +79,7 @@ pub fn admin_router(db: DatabaseConnection, base: Option<String>) -> Result<Rout
             "/admin/onboarding/invitations/{username}",
             delete(revoke_handler),
         )
+        .merge(crate::password_reset::admin_routes())
         .with_state(state))
 }
 #[derive(Deserialize, Serialize)]
@@ -464,6 +465,55 @@ mod tests {
         );
         assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
         assert_eq!(user::Entity::find().all(&db).await.unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn password_reset_routes_require_admin_bearer() {
+        use tower::ServiceExt;
+        let db = database().await;
+        let state = Arc::new(AdminState {
+            db,
+            base: "https://auth.example.test".into(),
+            token_hash: Sha256::digest(b"correct-secret").into(),
+        });
+        let router = crate::password_reset::admin_routes().with_state(state);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/password-resets")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"username":"alice"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri("/admin/password-resets/alice")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/password-resets")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer correct-secret")
+                    .body(axum::body::Body::from(r#"{"username":"alice"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT); // Authenticated; account absent.
     }
     #[tokio::test]
     async fn unauthenticated_admin_request_is_denied() {
