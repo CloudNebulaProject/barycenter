@@ -147,7 +147,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default='~/.config/barycenter-admin/config.json')
     commands = parser.add_subparsers(dest='command', required=True)
-    reset = commands.add_parser('reset-password', help='Email a single-use reset link to the existing verified address')
+    reset = commands.add_parser('reset-password', help='Email a single-use reset link to the account’s existing email address')
     reset.add_argument('username')
     reset.add_argument('--expires-in', type=int, default=3600, help='Lifetime in seconds, 300–86400')
     reset.add_argument('--no-send', action='store_true', help='Save a private receipt without sending email')
