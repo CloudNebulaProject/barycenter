@@ -92,10 +92,11 @@ pub struct IdTokenClaims {
     pub iss: String,
     pub sub: String,
     pub aud: serde_json::Value, // can be string or array
-    pub exp: i64,
-    pub iat: i64,
+    // JWT NumericDate permits fractional seconds (including our josekit issuer).
+    pub exp: f64,
+    pub iat: f64,
     pub nonce: Option<String>,
-    pub auth_time: Option<i64>,
+    pub auth_time: Option<f64>,
     pub amr: Option<Vec<String>>,
     pub acr: Option<String>,
     pub email: Option<String>,
@@ -383,13 +384,13 @@ impl OidcRpClient {
         }
 
         // -- Validate expiration --
-        let now = chrono::Utc::now().timestamp();
+        let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
         if claims.exp <= now {
             return Err(RpClientError::TokenExpired);
         }
 
         // -- Validate iat freshness (must be within last 10 minutes) --
-        let max_iat_age_secs = 600; // 10 minutes
+        let max_iat_age_secs = 600.0; // 10 minutes
         if now - claims.iat > max_iat_age_secs {
             return Err(RpClientError::TokenValidationFailed(format!(
                 "ID token iat is too old: issued {}s ago (max {}s)",
@@ -397,7 +398,7 @@ impl OidcRpClient {
                 max_iat_age_secs
             )));
         }
-        if claims.iat > now + 60 {
+        if claims.iat > now + 60.0 {
             // Allow 60s clock skew into the future
             return Err(RpClientError::TokenValidationFailed(format!(
                 "ID token iat is in the future: {}s ahead",
@@ -637,6 +638,74 @@ mod tests {
         assert!(claims.nonce.is_none());
         assert!(claims.amr.is_none());
         assert!(claims.email.is_none());
+    }
+
+    #[test]
+    fn test_signed_id_token_numeric_dates() {
+        let key = Jwk::generate_rsa_key(2048).unwrap();
+        let public = key.to_public_key().unwrap();
+        let mut peer = make_test_peer();
+        peer.pinned_jwks = Some(serde_json::json!({"keys": [public]}).to_string());
+        let client = OidcRpClient::new();
+        let now = std::time::SystemTime::now();
+        let seconds = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let mut payload = jwt::JwtPayload::new();
+        payload.set_issuer(&peer.issuer_url);
+        payload.set_subject("native-subject");
+        payload.set_audience(vec![peer.client_id.clone()]);
+        // Use the same issuer API that produced the failing live ID token.
+        payload.set_issued_at(&now);
+        payload
+            .set_claim("exp", Some(serde_json::json!(seconds + 3600.0)))
+            .unwrap();
+        payload
+            .set_claim("auth_time", Some(serde_json::json!(seconds - 0.25)))
+            .unwrap();
+        payload
+            .set_claim("nonce", Some(serde_json::json!("bound-nonce")))
+            .unwrap();
+        let signer = RS256.signer_from_jwk(&key).unwrap();
+        let header = josekit::jws::JwsHeader::new();
+        let sign =
+            |payload: &jwt::JwtPayload| jwt::encode_with_signer(payload, &header, &signer).unwrap();
+        let token = sign(&payload);
+        let claims = client
+            .validate_id_token(&token, &peer, "bound-nonce")
+            .unwrap();
+        assert_eq!(claims.sub, "native-subject");
+        assert_eq!(claims.iat, seconds);
+        assert_eq!(claims.auth_time, Some(seconds - 0.25));
+        assert!(matches!(
+            client.validate_id_token(&token, &peer, "other-nonce"),
+            Err(RpClientError::NonceMismatch { .. })
+        ));
+        payload
+            .set_claim("exp", Some(serde_json::json!(seconds - 0.25)))
+            .unwrap();
+        assert!(matches!(
+            client.validate_id_token(&sign(&payload), &peer, "bound-nonce"),
+            Err(RpClientError::TokenExpired)
+        ));
+        payload
+            .set_claim("exp", Some(serde_json::json!(seconds + 3600.0)))
+            .unwrap();
+        payload
+            .set_claim("iat", Some(serde_json::json!(seconds + 120.25)))
+            .unwrap();
+        assert!(matches!(
+            client.validate_id_token(&sign(&payload), &peer, "bound-nonce"),
+            Err(RpClientError::TokenValidationFailed(_))
+        ));
+        payload
+            .set_claim("iat", Some(serde_json::json!(seconds - 601.25)))
+            .unwrap();
+        assert!(matches!(
+            client.validate_id_token(&sign(&payload), &peer, "bound-nonce"),
+            Err(RpClientError::TokenValidationFailed(_))
+        ));
     }
 
     #[test]
