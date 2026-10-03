@@ -2636,17 +2636,22 @@ async fn login_submit(
     }
 
     // Verify credentials
-    let subject =
-        match storage::verify_user_password(&state.db, &form.username, &form.password).await {
-            Ok(Some(sub)) => sub,
-            _ => {
-                // Redirect back to login with error
-                let return_to = urlencoded(&return_to);
-                let error = urlencoded("Invalid username or password");
-                return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
-                    .into_response();
-            }
-        };
+    let subject = match storage::verify_user_password(
+        &state.db,
+        local_login_username(&form.username, &state.settings.webfinger.resource_domain),
+        &form.password,
+    )
+    .await
+    {
+        Ok(Some(sub)) => sub,
+        _ => {
+            // Redirect back to login with error
+            let return_to = urlencoded(&return_to);
+            let error = urlencoded("Invalid username or password");
+            return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
+                .into_response();
+        }
+    };
 
     // Check if user requires 2FA
     let user = match storage::get_user_by_subject(&state.db, &subject).await {
@@ -4109,6 +4114,16 @@ fn federation_state_matches(headers: &HeaderMap, state: &str) -> bool {
         })
         .is_some_and(|cookie| bool::from(cookie.as_bytes().ct_eq(state.as_bytes())))
 }
+fn local_login_username<'a>(identifier: &'a str, local_domain: &str) -> &'a str {
+    if !local_domain.is_empty() {
+        if let Some((username, domain)) = identifier.split_once('@') {
+            if domain == local_domain && !username.is_empty() {
+                return username;
+            }
+        }
+    }
+    identifier
+}
 fn federated_login_return(return_to: &str, identifier: &str, local_domain: &str) -> Option<String> {
     let domain = crate::federation::webfinger::WebFingerClient::extract_domain(identifier).ok()?;
     if domain == local_domain {
@@ -4788,6 +4803,18 @@ mod federation_browser_tests {
                 .unwrap(),
         );
         assert!(federation_state_matches(&h, "correct-state"));
+    }
+    #[test]
+    fn home_provider_accepts_its_domain_qualified_username() {
+        assert_eq!(
+            local_login_username("toasty@wegmueller.it", "wegmueller.it"),
+            "toasty"
+        );
+        assert_eq!(
+            local_login_username("toasty@other.test", "wegmueller.it"),
+            "toasty@other.test"
+        );
+        assert_eq!(local_login_username("toasty", "wegmueller.it"), "toasty");
     }
     #[test]
     fn home_identifier_resumes_only_local_authorization() {
