@@ -29,3 +29,13 @@ impl MigratorTrait for Migrator {
         ]
     }
 }
+
+// Keep UTC RFC3339 text defaults consistent with the federation entities.
+fn timestamp_default(backend: sea_orm_migration::sea_orm::DbBackend) -> &'static str {
+    match backend {
+        sea_orm_migration::sea_orm::DbBackend::Postgres => {
+            "(to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'))"
+        }
+        _ => "(strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+    }
+}

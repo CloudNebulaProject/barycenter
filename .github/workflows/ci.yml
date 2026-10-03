@@ -21,6 +21,17 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: barycenter
+          POSTGRES_PASSWORD: migration-test-only
+          POSTGRES_DB: barycenter_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U barycenter -d barycenter_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
 
     steps:
       - name: Checkout code
@@ -72,6 +83,11 @@ jobs:
 
       - name: Run tests
         run: cargo nextest run --verbose
+
+      - name: Verify PostgreSQL fresh migrations and defaults
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgres://barycenter:migration-test-only@localhost:5432/barycenter_test
+        run: cargo test -p migration --test backend_migrations postgres_fresh -- --ignored
 
   docker-build:
     name: Docker Build Check
