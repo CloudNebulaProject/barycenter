@@ -121,13 +121,14 @@ pub struct AppState {
 
 // Security headers middleware
 async fn security_headers(
-    State(db): State<DatabaseConnection>,
+    State(state): State<AppState>,
     request: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
     // Browsers apply form-action to the entire redirect chain, including the
     // RP callback after a same-origin login or consent POST. Permit only the
     // origin of an exact registered redirect URI for this authorization flow.
+    let db = &state.db;
     let mut context = url::Url::parse(&format!("http://localhost{}", request.uri())).ok();
     if request.uri().path() == "/login" {
         context = context.as_ref().and_then(|url| {
@@ -156,6 +157,18 @@ async fn security_headers(
                             form_action.push(' ');
                             form_action.push_str(&uri.origin().ascii_serialization());
                         }
+                    }
+                }
+            }
+        }
+    }
+    if state.settings.federation.enabled && matches!(request.uri().path(), "/login" | "/consent") {
+        if let Ok(peers) = crate::federation::storage::list_trusted_peers(db).await {
+            for peer in peers.into_iter().filter(|p| p.status == "active") {
+                if let Ok(url) = url::Url::parse(&peer.issuer_url) {
+                    if url.scheme() == "https" {
+                        form_action.push(' ');
+                        form_action.push_str(&url.origin().ascii_serialization());
                     }
                 }
             }
@@ -244,6 +257,7 @@ pub async fn serve(
             get(crate::federation::entity_proof::entity_proof),
         )
         .route("/federation/callback", get(federation_callback))
+        .route("/.well-known/webfinger", get(local_webfinger))
         .route("/federation/peer-request", post(federation_peer_request))
         .route("/federation/peer-confirm", post(federation_peer_confirm))
         .route("/login", get(login_page).post(login_submit))
@@ -289,7 +303,7 @@ pub async fn serve(
     let router = router
         .nest_service("/static", ServeDir::new("static"))
         .layer(middleware::from_fn_with_state(
-            state.db.clone(),
+            state.clone(),
             security_headers,
         ))
         .with_state(state.clone());
@@ -2609,6 +2623,18 @@ async fn login_submit(
 ) -> impl IntoResponse {
     let return_to = safe_local_return_to(form.return_to.as_deref());
 
+    // A home-domain identifier resumes the validated authorization request;
+    // it never sends the entered password to the peer or merges by email.
+    if state.settings.federation.enabled {
+        if let Some(target) = federated_login_return(
+            &return_to,
+            &form.username,
+            &state.settings.webfinger.resource_domain,
+        ) {
+            return Redirect::to(&target).into_response();
+        }
+    }
+
     // Verify credentials
     let subject =
         match storage::verify_user_password(&state.db, &form.username, &form.password).await {
@@ -4070,6 +4096,92 @@ async fn device_consent(
 
 // =============================================================================
 // Federation: P2P identity brokering
+
+fn federation_state_matches(headers: &HeaderMap, state: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|c| c.trim().strip_prefix("barycenter_federation_state="))
+        })
+        .is_some_and(|cookie| bool::from(cookie.as_bytes().ct_eq(state.as_bytes())))
+}
+fn federated_login_return(return_to: &str, identifier: &str, local_domain: &str) -> Option<String> {
+    let domain = crate::federation::webfinger::WebFingerClient::extract_domain(identifier).ok()?;
+    if domain == local_domain {
+        return None;
+    }
+    let mut url = url::Url::parse(&format!("https://local.invalid{return_to}")).ok()?;
+    if url.path() != "/authorize" {
+        return None;
+    }
+    let mut pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(k, _)| k != "login_hint")
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    pairs.push(("login_hint".into(), identifier.into()));
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    Some(format!("{}?{}", url.path(), url.query().unwrap_or("")))
+}
+#[derive(Deserialize)]
+struct WebFingerQuery {
+    resource: String,
+    rel: Option<String>,
+}
+async fn local_webfinger(
+    State(state): State<AppState>,
+    Query(q): Query<WebFingerQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let domain = &state.settings.webfinger.resource_domain;
+    let Some(identifier) = q.resource.strip_prefix("acct:") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some((username, requested_domain)) = identifier.split_once('@') else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !state.settings.federation.enabled
+        || domain.is_empty()
+        || requested_domain != domain
+        || username.is_empty()
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if username != "_federation" {
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        match crate::entities::user::Entity::find()
+            .filter(crate::entities::user::Column::Username.eq(username))
+            .filter(crate::entities::user::Column::Enabled.eq(1))
+            .one(&state.db)
+            .await
+        {
+            Ok(Some(_)) => (),
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+    let rel = "http://openid.net/specs/connect/1.0/issuer";
+    let issuer = state.settings.issuer();
+    let links = if q.rel.as_deref().is_none_or(|r| r == rel) {
+        vec![
+            json!({"rel":rel,"href":issuer,"properties":{"https://barycenter.dev/rel/federation-capable":"true","https://barycenter.dev/rel/entity-proof":format!("{issuer}/.well-known/barycenter-entity")}}),
+        ]
+    } else {
+        vec![]
+    };
+    (
+        [
+            ("content-type", "application/jrd+json"),
+            ("cache-control", "no-store"),
+        ],
+        Json(json!({"subject":q.resource,"links":links})),
+    )
+        .into_response()
+}
 // =============================================================================
 
 /// Try to redirect to a federated peer based on the login_hint domain.
@@ -4203,7 +4315,18 @@ async fn try_federated_redirect(
         "Redirecting to federated peer for authentication"
     );
 
-    Some(Redirect::temporary(&redirect_url).into_response())
+    let mut response = Redirect::temporary(&redirect_url).into_response();
+    let secure = if state.settings.issuer().starts_with("https://") {
+        "Secure; "
+    } else {
+        ""
+    };
+    let cookie=format!("barycenter_federation_state={}; HttpOnly; {}SameSite=Lax; Path=/federation/callback; Max-Age=600",fed_state,secure);
+    response.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        HeaderValue::from_str(&cookie).ok()?,
+    );
+    Some(response)
 }
 
 /// Federation callback query parameters (returned by the peer IdP).
@@ -4219,6 +4342,7 @@ struct FederationCallbackQuery {
 async fn federation_callback(
     State(state): State<AppState>,
     Query(q): Query<FederationCallbackQuery>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     use crate::federation::{identity, rp_client::OidcRpClient, storage as fed_storage};
 
@@ -4241,6 +4365,10 @@ async fn federation_callback(
         Some(c) => c.as_str(),
         None => return (StatusCode::BAD_REQUEST, "Missing code parameter").into_response(),
     };
+
+    if !federation_state_matches(&headers, fed_state) {
+        return (StatusCode::BAD_REQUEST, "Federation browser state mismatch").into_response();
+    }
 
     // Look up the federation auth request by state
     let fed_req =
@@ -4380,6 +4508,11 @@ async fn federation_callback(
         }
     };
 
+    match storage::get_user_by_subject(&state.db, &local_user_id).await {
+        Ok(Some(u)) if u.enabled == 1 => (),
+        _ => return (StatusCode::FORBIDDEN, "Local account is disabled").into_response(),
+    }
+
     // Create a local session for the federated user
     let now = chrono::Utc::now().timestamp();
     let session_ttl = 3600i64;
@@ -4428,7 +4561,7 @@ async fn federation_callback(
         &session_id,
         Some(&amr),
         Some(&acr),
-        Some(true),
+        Some(peer.trust_peer_acr && matches!(acr.as_str(), "aal2" | "aal3")),
     )
     .await;
 
@@ -4459,15 +4592,13 @@ async fn federation_callback(
     );
 
     // Set session cookie and redirect to /authorize
-    let cookie = format!(
-        "session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
-        session_id, session_ttl
-    );
+    let cookie = SessionCookie::new(session_id).to_cookie_header(&state.settings);
     let mut response = Redirect::temporary(&authorize_url).into_response();
     response.headers_mut().insert(
         axum::http::header::SET_COOKIE,
         HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static("")),
     );
+    response.headers_mut().append(axum::http::header::SET_COOKIE,HeaderValue::from_static("barycenter_federation_state=; HttpOnly; Secure; SameSite=Lax; Path=/federation/callback; Max-Age=0"));
     response
 }
 
@@ -4542,5 +4673,140 @@ async fn federation_peer_confirm(State(state): State<AppState>, body: String) ->
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod federation_browser_tests {
+    use super::*;
+    #[tokio::test]
+    async fn builtin_webfinger_exposes_only_enabled_accounts_in_owned_domain() {
+        use migration::{Migrator, MigratorTrait};
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.server.public_base_url = Some("https://auth.example.test".into());
+        settings.federation.enabled = true;
+        settings.webfinger.resource_domain = "example.test".into();
+        settings.keys.jwks_path = dir.path().join("jwks.json");
+        settings.keys.private_key_path = dir.path().join("key.json");
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        let alice = storage::create_user(
+            &db,
+            "alice",
+            "a long password",
+            Some("alice@example.test".into()),
+        )
+        .await
+        .unwrap();
+        let state = AppState {
+            jwks: JwksManager::new(settings.keys.clone()).await.unwrap(),
+            webauthn: crate::webauthn_manager::WebAuthnManager::new(
+                "auth.example.test",
+                &url::Url::parse("https://auth.example.test").unwrap(),
+            )
+            .await
+            .unwrap(),
+            settings: Arc::new(settings),
+            db,
+        };
+        for resource in ["acct:_federation@example.test", "acct:alice@example.test"] {
+            let response = local_webfinger(
+                State(state.clone()),
+                Query(WebFingerQuery {
+                    resource: resource.into(),
+                    rel: None,
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["content-type"], "application/jrd+json");
+            let body = axum::body::to_bytes(response.into_body(), 10000)
+                .await
+                .unwrap();
+            let jrd: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(jrd["subject"], resource);
+            assert_eq!(jrd["links"][0]["href"], "https://auth.example.test");
+            assert_eq!(
+                jrd["links"][0]["properties"]["https://barycenter.dev/rel/entity-proof"],
+                "https://auth.example.test/.well-known/barycenter-entity"
+            );
+        }
+        for resource in [
+            "acct:alice@other.test",
+            "acct:missing@example.test",
+            "https://example.test",
+        ] {
+            assert_eq!(
+                local_webfinger(
+                    State(state.clone()),
+                    Query(WebFingerQuery {
+                        resource: resource.into(),
+                        rel: None
+                    })
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+        storage::update_user(
+            &state.db,
+            &alice.subject,
+            false,
+            Some("alice@example.test".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            local_webfinger(
+                State(state),
+                Query(WebFingerQuery {
+                    resource: "acct:alice@example.test".into(),
+                    rel: None
+                })
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    #[test]
+    fn callback_requires_exact_browser_state_cookie() {
+        let mut h = HeaderMap::new();
+        assert!(!federation_state_matches(&h, "correct-state"));
+        h.insert(
+            axum::http::header::COOKIE,
+            "barycenter_federation_state=wrong-state".parse().unwrap(),
+        );
+        assert!(!federation_state_matches(&h, "correct-state"));
+        h.insert(
+            axum::http::header::COOKIE,
+            "other=ignored; barycenter_federation_state=correct-state"
+                .parse()
+                .unwrap(),
+        );
+        assert!(federation_state_matches(&h, "correct-state"));
+    }
+    #[test]
+    fn home_identifier_resumes_only_local_authorization() {
+        let target = federated_login_return(
+            "/authorize?client_id=app&state=preserved&login_hint=old",
+            "toasty@wegmueller.it",
+            "aopc.cloud",
+        )
+        .unwrap();
+        let url = url::Url::parse(&format!("https://auth.example.test{target}")).unwrap();
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(pairs.get("state").unwrap(), "preserved");
+        assert_eq!(pairs.get("login_hint").unwrap(), "toasty@wegmueller.it");
+        assert!(federated_login_return(
+            "/authorize?client_id=app",
+            "local@aopc.cloud",
+            "aopc.cloud"
+        )
+        .is_none());
+        assert!(federated_login_return("/other", "user@wegmueller.it", "aopc.cloud").is_none());
     }
 }

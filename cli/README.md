@@ -131,16 +131,16 @@ barycenter-admin reset-password alice
 barycenter-admin revoke-reset --username alice
 ```
 
-The server chooses the account's existing verified email address. There is no
-recipient override. Disabled accounts, unverified email and missing accounts
-are ineligible. Default validity is one hour (`--expires-in` accepts 300–86400
+The server chooses the account's existing email address. There is no
+recipient override. Disabled accounts, missing email and missing accounts are ineligible. Default validity is one hour (`--expires-in` accepts 300–86400
 seconds). `--no-send` saves a private receipt; `send --receipt PATH` retries its
 email without issuing another token. Reissue or revoke invalidates old links.
 
 The recipient chooses a 12–128 byte password through `/password-reset`. Tokens
 are 256-bit, digest-only in the database, carried in a URL fragment, removed from
 browser history and redeemed only by POST. Redemption is atomic and single-use.
-It preserves the subject, email, enabled status and MFA settings. A link cannot
+It preserves the subject, email address, enabled status and MFA settings. Possession
+of the mailed token verifies the stored email when redemption completes. A link cannot
 survive an intervening password/email change or reactivate a disabled account.
 It deletes the user's Barycenter sessions, authorization/device codes and revokes
 access/refresh tokens. Independently maintained relying-party sessions (including

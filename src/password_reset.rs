@@ -1,4 +1,4 @@
-//! Operator-issued recovery for an existing, enabled, verified-email account.
+//! Operator-issued recovery for an existing, enabled account, proving its stored email by token possession.
 use crate::{
     entities::{access_token, auth_code, password_reset as reset, refresh_token, session, user},
     onboarding::{authorize, AcceptRequest, AdminState},
@@ -54,7 +54,6 @@ pub async fn issue(
     let u = user::Entity::find()
         .filter(user::Column::Username.eq(&req.username))
         .filter(user::Column::Enabled.eq(1))
-        .filter(user::Column::EmailVerified.eq(1))
         .one(db)
         .await
         .map_err(internal)?
@@ -153,9 +152,9 @@ pub async fn accept(db: &DatabaseConnection, req: AcceptRequest) -> Result<(), A
     // or survive an intervening credential change. Failed updates roll back claim.
     let changed = user::Entity::update_many()
         .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
+        .col_expr(user::Column::EmailVerified, Expr::value(1))
         .filter(user::Column::Subject.eq(&row.subject))
         .filter(user::Column::Enabled.eq(1))
-        .filter(user::Column::EmailVerified.eq(1))
         .filter(user::Column::Email.eq(&row.email))
         .filter(user::Column::PasswordHash.eq(&row.password_hash_at_issue))
         .exec(&tx)
@@ -491,17 +490,17 @@ mod tests {
             .exec(&db)
             .await
             .unwrap();
-        assert!(redeem(&db, &r, NEW).await.is_err());
-        assert!(issue(
-            &db,
-            "https://auth.example.test",
-            IssueRequest {
-                username: "alice".into(),
-                expires_in: None
-            }
-        )
-        .await
-        .is_err());
+        let verified_by_mail = issued(&db).await;
+        redeem(&db, &verified_by_mail, NEW).await.unwrap();
+        assert_eq!(
+            user::Entity::find()
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified,
+            1
+        );
     }
     #[tokio::test]
     async fn intervening_password_change_invalidates_old_reset_without_consuming_it() {

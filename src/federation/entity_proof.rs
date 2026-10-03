@@ -79,9 +79,7 @@ pub async fn entity_proof(State(state): State<AppState>) -> impl IntoResponse {
     let issuer = state.settings.issuer();
 
     // Determine the domain: prefer webfinger resource_domain, else extract from issuer
-    let domain = if state.settings.webfinger.enabled
-        && !state.settings.webfinger.resource_domain.is_empty()
-    {
+    let domain = if !state.settings.webfinger.resource_domain.is_empty() {
         state.settings.webfinger.resource_domain.clone()
     } else {
         extract_domain_from_issuer(&issuer)
