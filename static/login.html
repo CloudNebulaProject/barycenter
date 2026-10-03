@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <title>{{copy_title}} · {{issuer_host}}</title>
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="shell-head">
+      <p class="shell-title">{{copy_title}}</p>
+      <p class="origin" id="origin">
+        <span class="origin-dot" aria-hidden="true"></span>
+        <span class="origin-host"><bdi>{{issuer_host}}</bdi></span>
+      </p>
+    </header>
+
+    <div class="card">
+      <div class="notice notice-error" id="error" role="alert" aria-atomic="true" {{error_hidden}}>{{error_message}}</div>
+
+      <!-- IDENTIFIER_STAGE_START -->
+      <!-- Stage 1: who is signing in. Never contains a password field. -->
+      <section class="stage" id="stage-identifier" aria-labelledby="identifier-title" {{identifier_hidden}}>
+        <h1 class="stage-title" id="identifier-title">{{copy_identifier_title}}</h1>
+        <p class="stage-body">{{copy_identifier_body}}</p>
+
+        <form class="form" method="POST" action="/login/identify" id="identify-form" data-local-domain="{{local_domain}}">
+          <input type="hidden" name="return_to" value="{{return_to}}">
+          <div class="field">
+            <label class="label" for="identifier">{{copy_account_label}}</label>
+            <input class="input" type="text" name="username" id="identifier" value="{{username}}"
+                   autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+                   inputmode="email" enterkeyhint="next" required autofocus
+                   placeholder="name@{{local_domain}}" aria-describedby="identifier-hint">
+            <p class="hint" id="identifier-hint">{{copy_identifier_hint}}</p>
+          </div>
+          <button class="btn btn-primary" type="submit">{{copy_continue}}</button>
+        </form>
+
+        <p class="fineprint">{{copy_invitation_info}}</p>
+      </section>
+      <!-- IDENTIFIER_STAGE_END -->
+
+      <!-- PASSWORD_STAGE_START -->
+      <!-- Stage 2: password at the home provider only. Username is known. -->
+      <section class="stage" id="stage-password" aria-labelledby="password-title" {{password_hidden}}>
+        <h1 class="stage-title" id="password-title">{{copy_password_title}}</h1>
+        <p class="stage-body">{{copy_password_body}}</p>
+
+        <form class="form" method="POST" action="/login" id="password-form">
+          <input type="hidden" name="return_to" value="{{return_to}}">
+          <div class="field">
+            <div class="label-row">
+              <span class="label" id="account-label">{{copy_account_label}}</span>
+              <a class="link link-small" id="change-account" href="{{change_url}}">{{copy_change_account}}</a>
+            </div>
+            <input type="hidden" name="username" id="username" value="{{username}}" autocomplete="username">
+            <p class="account" id="account-display"><bdi>{{username}}</bdi></p>
+          </div>
+          <div class="field">
+            <label class="label" for="password">{{copy_password_label}}</label>
+            <div class="input-group">
+              <input class="input" type="password" name="password" id="password"
+                     autocomplete="current-password" required autofocus enterkeyhint="go"
+                     aria-describedby="password-help">
+              <button class="btn btn-ghost toggle" type="button" id="toggle-password" hidden
+                      aria-controls="password" aria-pressed="false"
+                      data-show="{{copy_password_show}}" data-hide="{{copy_password_hide}}">{{copy_password_show}}</button>
+            </div>
+          </div>
+          <button class="btn btn-primary" type="submit">{{copy_sign_in}}</button>
+        </form>
+
+        <p class="fineprint" id="password-help">{{copy_recovery_help}}</p>
+        <p class="fineprint">{{copy_recovery_admin}}</p>
+      </section>
+      <!-- PASSWORD_STAGE_END -->
+
+    </div>
+  </main>
+  <script src="/static/login.js" type="module"></script>
+</body>
+</html>
