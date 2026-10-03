@@ -27,7 +27,8 @@ crabidp.db
 README.md
 CONTRIBUTING.md
 CLAUDE.md
-docs/
+docs/*
+!docs/login-copy.json
 
 # Tests
 tests/
