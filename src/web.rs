@@ -120,7 +120,48 @@ pub struct AppState {
 }
 
 // Security headers middleware
-async fn security_headers(request: Request<Body>, next: Next) -> impl IntoResponse {
+async fn security_headers(
+    State(db): State<DatabaseConnection>,
+    request: Request<Body>,
+    next: Next,
+) -> impl IntoResponse {
+    // Browsers apply form-action to the entire redirect chain, including the
+    // RP callback after a same-origin login or consent POST. Permit only the
+    // origin of an exact registered redirect URI for this authorization flow.
+    let mut context = url::Url::parse(&format!("http://localhost{}", request.uri())).ok();
+    if request.uri().path() == "/login" {
+        context = context.as_ref().and_then(|url| {
+            let return_to = url.query_pairs().find(|(key, _)| key == "return_to")?.1;
+            let local = safe_local_return_to(Some(&return_to));
+            url::Url::parse(&format!("http://localhost{local}")).ok()
+        });
+    }
+    let mut form_action = "'self'".to_string();
+    if let Some(context) = context.filter(|url| {
+        matches!(url.path(), "/authorize" | "/consent")
+            && matches!(request.uri().path(), "/login" | "/consent")
+    }) {
+        let params: std::collections::HashMap<_, _> = context.query_pairs().collect();
+        if let (Some(client_id), Some(redirect_uri)) =
+            (params.get("client_id"), params.get("redirect_uri"))
+        {
+            if let Ok(Some(client)) = storage::get_client(&db, client_id).await {
+                if client
+                    .redirect_uris
+                    .iter()
+                    .any(|uri| uri == redirect_uri.as_ref())
+                {
+                    if let Ok(uri) = url::Url::parse(redirect_uri) {
+                        if matches!(uri.scheme(), "http" | "https") {
+                            form_action.push(' ');
+                            form_action.push_str(&uri.origin().ascii_serialization());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let csp = format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action {form_action}");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -145,7 +186,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> impl IntoRespon
     // Content-Security-Policy: Restrict resource loading (allows WASM for passkeys)
     headers.insert(
         HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'"),
+        HeaderValue::from_str(&csp).expect("validated URL origin is a valid CSP header"),
     );
 
     // Referrer-Policy: Control referrer information
@@ -245,7 +286,10 @@ pub async fn serve(
     // Serve static files (WASM, JS, etc.)
     let router = router
         .nest_service("/static", ServeDir::new("static"))
-        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            state.db.clone(),
+            security_headers,
+        ))
         .with_state(state.clone());
 
     let public_addr: SocketAddr = format!(
