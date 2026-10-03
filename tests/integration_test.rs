@@ -409,7 +409,10 @@ fn consent_page_is_embedded_server_rendered_and_completes_authorization() {
     assert_eq!(params.get("step").map(|s| s.as_ref()), Some("continue"));
     let authorize_location = params.get("return_to").unwrap();
     assert!(authorize_location.starts_with("/authorize?"));
-    let boundary = authenticated_client.get(continuation.clone()).send().unwrap();
+    let boundary = authenticated_client
+        .get(continuation.clone())
+        .send()
+        .unwrap();
     assert_eq!(boundary.status(), reqwest::StatusCode::OK);
     assert_eq!(boundary.headers()["cache-control"], "no-store");
     let boundary_html = boundary.text().unwrap();
