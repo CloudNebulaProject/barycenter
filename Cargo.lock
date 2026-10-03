@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "barycenter"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.11"
 dependencies = [
  "anyhow",
  "argon2",
@@ -528,6 +528,7 @@ dependencies = [
  "serde_urlencoded",
  "serde_with",
  "sha2",
+ "subtle",
  "tempfile",
  "test-log",
  "thiserror 1.0.69",

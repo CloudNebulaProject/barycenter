@@ -13,6 +13,14 @@ struct TestServer {
 
 impl TestServer {
     fn start() -> Self {
+        Self::start_with_skip_consent(true)
+    }
+
+    fn start_with_consent() -> Self {
+        Self::start_with_skip_consent(false)
+    }
+
+    fn start_with_skip_consent(skip_consent: bool) -> Self {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("Failed to reserve a test server port");
         let port = listener
@@ -52,7 +60,8 @@ impl TestServer {
             });
 
         // Use piped stderr so we can capture errors if server fails to start
-        let mut process = Command::new(&binary_path)
+        let mut command = Command::new(&binary_path);
+        command
             .env("RUST_LOG", "error")
             .env("BARYCENTER__SERVER__PORT", port.to_string())
             .env("BARYCENTER__SERVER__ADMIN_PORT", admin_port.to_string())
@@ -67,11 +76,15 @@ impl TestServer {
             )
             .env("BARYCENTER__SERVER__ALLOW_PUBLIC_REGISTRATION", "true") // Enable registration for tests
             .env("BARYCENTER__SERVER__PUBLIC_BASE_URL", &base_url) // Set public base URL for WebAuthn
-            .env("BARYCENTER_SKIP_CONSENT", "1") // Skip consent for tests
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("Failed to start server");
+            .stderr(std::process::Stdio::piped());
+        if skip_consent {
+            command.env("BARYCENTER_SKIP_CONSENT", "1");
+        } else {
+            command.env_remove("BARYCENTER_SKIP_CONSENT");
+        }
+
+        let mut process = command.spawn().expect("Failed to start server");
 
         // Wait for server to start
         thread::sleep(Duration::from_secs(2));
@@ -223,6 +236,157 @@ fn invalid_login_redirects_with_see_other_and_renders_error() {
         .text()
         .expect("Failed to read login error page")
         .contains("Invalid username or password"));
+}
+
+#[test]
+fn login_rejects_non_local_return_targets() {
+    let server = TestServer::start();
+    let client = reqwest::blocking::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Failed to build client");
+
+    client
+        .post(format!("{}/register", server.base_url()))
+        .form(&[
+            ("username", "safe-return-user"),
+            ("password", "testpass123"),
+            ("email", "safe-return@example.com"),
+        ])
+        .send()
+        .expect("Failed to register user");
+
+    for return_to in [
+        "https://attacker.example/",
+        "//attacker.example/",
+        "/\\attacker.example/",
+        "/ok\nno",
+    ] {
+        let response = client
+            .post(format!("{}/login", server.base_url()))
+            .form(&[
+                ("username", "safe-return-user"),
+                ("password", "testpass123"),
+                ("return_to", return_to),
+            ])
+            .send()
+            .expect("Failed to submit login");
+
+        assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/")
+        );
+    }
+}
+
+#[test]
+fn consent_page_is_embedded_server_rendered_and_completes_authorization() {
+    let server = TestServer::start_with_consent();
+    let (client_id, _client_secret, redirect_uri) = register_client(server.base_url());
+    let (authenticated_client, _jar) =
+        login_and_get_client(server.base_url(), "consent-user", "testpass123");
+
+    let pkce_verifier = "consent_verifier_1234567890123456789012345678901234567890";
+    let challenge_hash = sha2::Sha256::digest(pkce_verifier.as_bytes());
+    let pkce_challenge = base64ct::Base64UrlUnpadded::encode_string(&challenge_hash);
+    let auth_request = format!(
+        "{}/authorize?client_id={}&redirect_uri={}&response_type=code&scope=openid%20profile%20email&state=consent_state&nonce=consent_nonce&code_challenge={}&code_challenge_method=S256",
+        server.base_url(),
+        urlencoding::encode(&client_id),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(&pkce_challenge)
+    );
+
+    let auth_response = authenticated_client
+        .get(&auth_request)
+        .send()
+        .expect("Failed to request authorization");
+    assert!(auth_response.status().is_redirection());
+    let consent_location = auth_response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("Authorization response did not redirect to consent")
+        .to_string();
+    assert!(consent_location.starts_with("/consent?"));
+
+    let consent_response = authenticated_client
+        .get(format!("{}{}", server.base_url(), consent_location))
+        .send()
+        .expect("Failed to load consent page");
+    assert_eq!(consent_response.status(), reqwest::StatusCode::OK);
+    let consent_body = consent_response
+        .text()
+        .expect("Failed to read consent page");
+    assert!(consent_body.contains(&client_id));
+    assert!(consent_body.contains("consent-user"));
+    assert!(consent_body.contains("OpenID Connect"));
+    assert!(consent_body.contains("Profile Information"));
+    assert!(consent_body.contains("Email Address"));
+    assert!(consent_body.contains("value=\"consent_state\""));
+    assert!(consent_body.contains("value=\"consent_nonce\""));
+    assert!(!consent_body.contains("{{"));
+    assert!(!consent_body.contains("<script"));
+    assert!(!consent_body.contains("window.location.search"));
+
+    let consent_url = url::Url::parse(&format!("{}{}", server.base_url(), consent_location))
+        .expect("Invalid consent URL");
+    let mut form_params = std::collections::HashMap::new();
+    for (key, value) in consent_url.query_pairs() {
+        form_params.insert(key.to_string(), value.to_string());
+    }
+    form_params.insert("action".to_string(), "approve".to_string());
+
+    let approval_response = authenticated_client
+        .post(format!("{}/consent", server.base_url()))
+        .form(&form_params)
+        .send()
+        .expect("Failed to approve consent");
+    assert_eq!(
+        approval_response.status(),
+        reqwest::StatusCode::SEE_OTHER,
+        "Consent approval must switch the follow-up request to GET"
+    );
+    let authorize_location = approval_response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("Consent approval did not redirect to authorization");
+    assert!(
+        authorize_location.starts_with("/authorize?"),
+        "Unexpected redirect after consent approval: {authorize_location}"
+    );
+
+    let final_response = authenticated_client
+        .get(format!("{}{}", server.base_url(), authorize_location))
+        .send()
+        .expect("Failed to complete authorization after consent");
+    assert!(final_response.status().is_redirection());
+    let callback_location = final_response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("Authorization did not redirect to the client callback");
+    let callback_url = url::Url::parse(callback_location).expect("Invalid callback URL");
+    assert_eq!(
+        callback_url.origin().ascii_serialization(),
+        "http://localhost:3000"
+    );
+    assert_eq!(callback_url.path(), "/callback");
+    assert_eq!(
+        callback_url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.to_string()),
+        Some("consent_state".to_string())
+    );
+    assert!(callback_url
+        .query_pairs()
+        .any(|(key, value)| key == "code" && !value.is_empty()));
 }
 
 #[test]

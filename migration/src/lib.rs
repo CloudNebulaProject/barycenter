@@ -9,6 +9,8 @@ mod m20250222_000001_rename_device_code_table;
 mod m20260407_000001_create_federation_tables;
 mod m20260407_000002_create_peer_requests;
 
+mod m20261003_000001_onboarding_invitations;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -23,6 +25,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250222_000001_rename_device_code_table::Migration),
             Box::new(m20260407_000001_create_federation_tables::Migration),
             Box::new(m20260407_000002_create_peer_requests::Migration),
+            Box::new(m20261003_000001_onboarding_invitations::Migration),
         ]
     }
 }

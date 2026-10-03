@@ -39,7 +39,24 @@ async fn main() -> Result<()> {
 
     // load settings
     let settings = settings::Settings::load(&cli.config)?;
-    tracing::info!(?settings, "Loaded configuration");
+    let database_backend = match settings
+        .database
+        .url
+        .split_once(':')
+        .map(|(scheme, _)| scheme)
+    {
+        Some("postgres") | Some("postgresql") => "postgresql",
+        Some("sqlite") => "sqlite",
+        _ => "unknown",
+    };
+    tracing::info!(
+        server_host = %settings.server.host,
+        server_port = settings.server.port,
+        public_base_url = ?settings.server.public_base_url,
+        database_backend,
+        signing_algorithm = %settings.keys.alg,
+        "Loaded configuration"
+    );
 
     // init storage (database)
     let db = storage::init(&settings.database).await?;
@@ -58,9 +75,6 @@ async fn main() -> Result<()> {
         }
         None => {
             // Normal server startup
-            // ensure test users exist
-            ensure_test_users(&db).await?;
-
             // init jwks (generate if missing)
             let jwks_mgr = jwks::JwksManager::new(settings.keys.clone()).await?;
 
@@ -95,25 +109,5 @@ async fn main() -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-async fn ensure_test_users(db: &sea_orm::DatabaseConnection) -> Result<()> {
-    // Check if admin exists
-    if storage::get_user_by_username(db, "admin")
-        .await
-        .into_diagnostic()?
-        .is_none()
-    {
-        storage::create_user(
-            db,
-            "admin",
-            "password123",
-            Some("admin@example.com".to_string()),
-        )
-        .await
-        .into_diagnostic()?;
-        tracing::info!("Created default admin user (username: admin, password: password123)");
-    }
     Ok(())
 }

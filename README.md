@@ -182,6 +182,12 @@ helm install barycenter ./deploy/helm/barycenter \
   --create-namespace
 ```
 
+## Email onboarding and macOS admin CLI
+
+See [the CLI guide](cli/README.md) for single-use, expiring invitation links,
+Homebrew installation, SMTP configuration, resend and revocation. The dedicated
+admin endpoint is disabled until its own bearer-token file is provisioned.
+
 ## Releases
 
 For maintainers: see [RELEASE.md](RELEASE.md) for the release process.

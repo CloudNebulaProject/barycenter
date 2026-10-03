@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Explicit invitation issuance/delivery; no credentials in command arguments."""
+import argparse
+import email.message
+import json
+import os
+from pathlib import Path
+import smtplib
+import ssl
+import stat
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+
+class Failure(Exception):
+    pass
+
+
+def private_json(path):
+    path = Path(path).expanduser()
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise Failure('Private file must belong to you and have mode 0600: ' + str(path))
+    return json.loads(path.read_text())
+
+
+def secret(path):
+    path = Path(path).expanduser()
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise Failure('Credential file must belong to you and have mode 0600')
+    value = path.read_text().strip()
+    if not value or any(c in value for c in '\r\n\x00'):
+        raise Failure('Invalid credential file')
+    return value
+
+
+def endpoint(value):
+    url = urllib.parse.urlsplit(value)
+    if url.username or url.password or url.query or url.fragment or not url.hostname:
+        raise Failure('Invalid endpoint URL')
+    if url.scheme != 'https' and not (url.scheme == 'http' and url.hostname in ('localhost', '127.0.0.1', '::1')):
+        raise Failure('HTTPS is required except for loopback endpoints')
+    return value.rstrip('/')
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        raise Failure('Admin API redirects are refused')
+
+
+def request(config, method, path, data=None):
+    url = endpoint(config['admin_url']) + path
+    body = json.dumps(data).encode() if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method, headers={
+        'Authorization': 'Bearer ' + secret(config['admin_token_file']),
+        'Content-Type': 'application/json',
+    })
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open(req, timeout=15) as response:
+            payload = response.read(65537)
+            if len(payload) > 65536:
+                raise Failure('Admin API response too large')
+            return json.loads(payload) if payload else None
+    except urllib.error.HTTPError as error:
+        raise Failure('Admin API returned HTTP ' + str(error.code)) from None
+    except (urllib.error.URLError, TimeoutError):
+        raise Failure('Admin API unreachable or TLS validation failed') from None
+
+
+def validate_receipt(config, receipt):
+    public = endpoint(config['public_url'])
+    url = urllib.parse.urlsplit(receipt['onboarding_url'])
+    expected = urllib.parse.urlsplit(public + '/onboarding')
+    token = urllib.parse.parse_qs(url.fragment).get('token', [''])[0]
+    if (url.scheme, url.netloc, url.path, url.query) != (expected.scheme, expected.netloc, expected.path, '') or len(token) != 64 or any(c not in '0123456789abcdef' for c in token):
+        raise Failure('Unexpected onboarding URL from Admin API')
+    if receipt['expires_at'] <= time.time():
+        raise Failure('Invitation expired; issue a new invitation')
+    address = receipt['email']
+    if any(c.isspace() for c in address) or address.count('@') != 1:
+        raise Failure('Invalid recipient email')
+
+
+def save_receipt(config, receipt):
+    directory = Path(config.get('receipt_dir', '~/.local/state/barycenter-admin/invitations')).expanduser()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise Failure('Receipt directory must belong to you and have mode 0700')
+    path = directory / (str(uuid.uuid4()) + '.json')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(receipt, output)
+        output.write('\n')
+    return path
+
+
+def send(config, receipt):
+    validate_receipt(config, receipt)
+    smtp = config['smtp']
+    message = email.message.EmailMessage()
+    message['From'] = smtp['from']
+    message['To'] = receipt['email']
+    message['Subject'] = 'Your illumos and OpenIndiana account invitation'
+    message.set_content('You have been invited to the illumos and OpenIndiana notes service.\n\n'
+                        'Choose your password using this single-use link:\n' + receipt['onboarding_url'] + '\n\n'
+                        'The link expires at ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(receipt['expires_at'])) + '.\n'
+                        'If you were not expecting this invitation, you can ignore this email.\n')
+    context = ssl.create_default_context()
+    try:
+        if smtp.get('tls', 'starttls') == 'ssl':
+            client = smtplib.SMTP_SSL(smtp['host'], smtp.get('port', 465), timeout=15, context=context)
+        else:
+            client = smtplib.SMTP(smtp['host'], smtp.get('port', 587), timeout=15)
+        with client:
+            if smtp.get('tls', 'starttls') != 'ssl':
+                client.ehlo()
+                client.starttls(context=context)
+                client.ehlo()
+            client.login(smtp['username'], secret(smtp['password_file']))
+            refused = client.send_message(message)
+            if refused:
+                raise Failure('SMTP refused the recipient')
+    except (smtplib.SMTPException, OSError):
+        raise Failure('SMTP delivery failed; retry using the saved receipt. Delivery may be ambiguous.') from None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', default='~/.config/barycenter-admin/config.json')
+    commands = parser.add_subparsers(dest='command', required=True)
+    invite = commands.add_parser('invite', help='Issue a new invitation and send it; replaces any previous invitation')
+    invite.add_argument('email')
+    invite.add_argument('--username', required=True)
+    invite.add_argument('--expires-in', type=int, default=86400, help='Lifetime in seconds, 300–604800')
+    invite.add_argument('--no-send', action='store_true', help='Save a private receipt without sending email')
+    deliver = commands.add_parser('send', help='Retry sending an existing private invitation receipt')
+    deliver.add_argument('--receipt', required=True)
+    revoke = commands.add_parser('revoke', help='Invalidate an invitation; does not disable an activated account')
+    revoke.add_argument('--username', required=True)
+    args = parser.parse_args(argv)
+    os.umask(0o077)
+    try:
+        config = private_json(args.config)
+        if args.command == 'invite':
+            # Check delivery credentials and receipt location before minting a token.
+            if not args.no_send:
+                secret(config['smtp']['password_file'])
+            receipt = request(config, 'POST', '/admin/onboarding/invitations', {
+                'username': args.username, 'email': args.email, 'expires_in': args.expires_in,
+            })
+            validate_receipt(config, receipt)
+            path = save_receipt(config, receipt)
+            print('Private invitation receipt: ' + str(path))
+            if not args.no_send:
+                send(config, receipt)
+                print('Invitation accepted by SMTP for ' + receipt['email'])
+        elif args.command == 'send':
+            receipt = private_json(args.receipt)
+            send(config, receipt)
+            print('Invitation accepted by SMTP for ' + receipt['email'])
+        else:
+            request(config, 'DELETE', '/admin/onboarding/invitations/' + urllib.parse.quote(args.username, safe=''))
+            print('Invitation revoked')
+        return 0
+    except (Failure, KeyError, ValueError, OSError):
+        error = sys.exc_info()[1]
+        print(str(error) if isinstance(error, Failure) else 'Invalid configuration or private file', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

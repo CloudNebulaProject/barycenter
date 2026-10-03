@@ -1,7 +1,9 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "consents")]
+// Keep this aligned with `Consent::Table` in the existing consent migration,
+// which created the table as the singular `consent`.
+#[sea_orm(table_name = "consent")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
@@ -10,7 +12,8 @@ pub struct Model {
     pub scope: String,
     pub granted_at: i64,
     pub expires_at: Option<i64>,
-    pub revoked: i64,
+    /// Backed by the migration's PostgreSQL `INTEGER` (`INT4`) column.
+    pub revoked: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

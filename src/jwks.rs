@@ -27,43 +27,49 @@ impl JwksManager {
             fs::create_dir_all(parent)?;
         }
 
-        // If private key exists, load it; otherwise generate and persist both private and public
-        let private_jwk = if cfg.private_key_path.exists() {
+        // If the private key exists, keep using it. The public JWKS is derived from this
+        // key below on every startup so a stale file can never advertise different or
+        // incomplete signing-key metadata.
+        let mut private_jwk = if cfg.private_key_path.exists() {
             let s = fs::read_to_string(&cfg.private_key_path)?;
             // Stored as JSON
             serde_json::from_str::<Jwk>(&s)?
         } else {
-            let mut jwk = Jwk::generate_rsa_key(2048)?;
-            let kid = cfg.key_id.clone().unwrap_or_else(random_kid);
-            jwk.set_key_id(&kid);
-            jwk.set_algorithm(cfg.alg.as_str());
-            jwk.set_key_use("sig");
-            // Persist private key as JSON
-            let priv_json = serde_json::to_string_pretty(&jwk)?;
-            fs::write(&cfg.private_key_path, priv_json)?;
-            jwk
+            Jwk::generate_rsa_key(2048)?
         };
 
-        // Ensure JWKS file exists or update from private_jwk
-        if !cfg.jwks_path.exists() {
-            let mut public = private_jwk.to_public_key()?;
-            // Copy metadata from private key to public key
-            if let Some(kid) = private_jwk.key_id() {
-                public.set_key_id(kid);
-            }
-            if let Some(alg) = private_jwk.algorithm() {
-                public.set_algorithm(alg);
-            }
-            if let Some(use_) = private_jwk.key_use() {
-                public.set_key_use(use_);
-            }
-            let jwk_val: Value = serde_json::to_value(public)?;
-            let jwks = json!({ "keys": [jwk_val] });
-            fs::write(&cfg.jwks_path, serde_json::to_string_pretty(&jwks)?)?;
+        // Older persisted keys and JWKS files may predate this metadata. A signed ID
+        // token carries `kid`, so omitting it from the advertised JWK makes strict OIDC
+        // clients reject an otherwise valid signature with "No matching key found".
+        if private_jwk.key_id().is_none() {
+            private_jwk.set_key_id(&cfg.key_id.clone().unwrap_or_else(random_kid));
         }
+        if private_jwk.algorithm().is_none() {
+            private_jwk.set_algorithm(cfg.alg.as_str());
+        }
+        if private_jwk.key_use().is_none() {
+            private_jwk.set_key_use("sig");
+        }
+        fs::write(
+            &cfg.private_key_path,
+            serde_json::to_string_pretty(&private_jwk)?,
+        )?;
 
-        // Load public JWKS value
-        let public_jwks_value: Value = serde_json::from_str(&fs::read_to_string(&cfg.jwks_path)?)?;
+        let mut public = private_jwk.to_public_key()?;
+        if let Some(kid) = private_jwk.key_id() {
+            public.set_key_id(kid);
+        }
+        if let Some(alg) = private_jwk.algorithm() {
+            public.set_algorithm(alg);
+        }
+        if let Some(use_) = private_jwk.key_use() {
+            public.set_key_use(use_);
+        }
+        let public_jwks_value = json!({ "keys": [serde_json::to_value(public)?] });
+        fs::write(
+            &cfg.jwks_path,
+            serde_json::to_string_pretty(&public_jwks_value)?,
+        )?;
 
         Ok(Self {
             cfg,
@@ -218,6 +224,39 @@ mod tests {
         let jwk2 = manager2.private_jwk();
 
         assert_eq!(jwk1.parameter("n"), jwk2.parameter("n"));
+    }
+
+    #[tokio::test]
+    async fn test_jwks_manager_repairs_stale_public_metadata() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cfg = test_keys_config(&temp_dir);
+
+        let manager = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to create JwksManager");
+        let mut stale = manager.jwks_json();
+        let stale_key = stale["keys"][0]
+            .as_object_mut()
+            .expect("JWKS key must be an object");
+        stale_key.remove("kid");
+        stale_key.remove("alg");
+        fs::write(
+            &cfg.jwks_path,
+            serde_json::to_string_pretty(&stale).expect("Failed to serialize stale JWKS"),
+        )
+        .expect("Failed to persist stale JWKS");
+
+        let repaired = JwksManager::new(cfg.clone())
+            .await
+            .expect("Failed to repair stale JWKS");
+        assert_eq!(repaired.jwks_json()["keys"][0]["kid"], "test-kid-123");
+        assert_eq!(repaired.jwks_json()["keys"][0]["alg"], "RS256");
+
+        let persisted: Value = serde_json::from_str(
+            &fs::read_to_string(&cfg.jwks_path).expect("Failed to read repaired JWKS"),
+        )
+        .expect("Failed to parse repaired JWKS");
+        assert_eq!(persisted, repaired.jwks_json());
     }
 
     #[tokio::test]
