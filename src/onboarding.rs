@@ -467,6 +467,55 @@ mod tests {
         assert_eq!(user::Entity::find().all(&db).await.unwrap().len(), 1);
     }
     #[tokio::test]
+    async fn password_reset_routes_require_admin_bearer() {
+        use tower::ServiceExt;
+        let db = database().await;
+        let state = Arc::new(AdminState {
+            db,
+            base: "https://auth.example.test".into(),
+            token_hash: Sha256::digest(b"correct-secret").into(),
+        });
+        let router = crate::password_reset::admin_routes().with_state(state);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/password-resets")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"username":"alice"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri("/admin/password-resets/alice")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/password-resets")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer correct-secret")
+                    .body(axum::body::Body::from(r#"{"username":"alice"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT); // Authenticated; account absent.
+    }
+    #[tokio::test]
     async fn unauthenticated_admin_request_is_denied() {
         let db = database().await;
         let s = AdminState {

@@ -84,6 +84,9 @@ jobs:
       - name: Run tests
         run: cargo nextest run --verbose
 
+      - name: Verify admin CLI
+        run: python3 -m unittest discover -s cli/tests
+
       - name: Verify PostgreSQL fresh migrations and defaults
         env:
           MIGRATION_TEST_DATABASE_URL: postgres://barycenter:migration-test-only@localhost:5432/barycenter_test
