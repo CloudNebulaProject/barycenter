@@ -225,7 +225,19 @@ fn invalid_login_redirects_with_see_other_and_renders_error() {
         .get(reqwest::header::LOCATION)
         .and_then(|value| value.to_str().ok())
         .expect("Invalid login response did not include a Location header");
-    assert!(location.starts_with("/login?error=Invalid+username+or+password&return_to="));
+    let redirect = reqwest::Url::parse(&format!("{}{}", server.base_url(), location)).unwrap();
+    let query: std::collections::HashMap<_, _> = redirect.query_pairs().collect();
+    assert_eq!(query.get("error").map(|s| s.as_ref()), Some("credentials"));
+    assert_eq!(
+        query.get("username").map(|s| s.as_ref()),
+        Some("unknown-user")
+    );
+    assert_eq!(query.get("step").map(|s| s.as_ref()), Some("password"));
+    assert_eq!(
+        query.get("return_to").map(|s| s.as_ref()),
+        Some("/authorize?client_id=test-client")
+    );
+    assert!(!location.contains("wrong-password"));
 
     let error_page = client
         .get(format!("{}{}", server.base_url(), location))
@@ -235,7 +247,7 @@ fn invalid_login_redirects_with_see_other_and_renders_error() {
     assert!(error_page
         .text()
         .expect("Failed to read login error page")
-        .contains("Invalid username or password"));
+        .contains("We couldn&#x27;t sign you in with that account and password"));
 }
 
 #[test]

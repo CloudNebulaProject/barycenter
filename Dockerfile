@@ -12,6 +12,7 @@ COPY src ./src
 COPY migration ./migration
 COPY client-wasm ./client-wasm
 COPY static ./static
+COPY docs/login-copy.json ./docs/login-copy.json
 
 # Build release binary with platform-specific caches to avoid race conditions
 ARG TARGETPLATFORM
@@ -38,6 +39,7 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /barycenter /usr/local/bin/barycenter
+COPY static /app/static
 
 # Copy default configuration
 COPY config.toml /app/config/config.toml

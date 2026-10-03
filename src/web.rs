@@ -261,6 +261,7 @@ pub async fn serve(
         .route("/federation/peer-request", post(federation_peer_request))
         .route("/federation/peer-confirm", post(federation_peer_confirm))
         .route("/login", get(login_page).post(login_submit))
+        .route("/login/identify", post(login_identify))
         .route("/login/2fa", get(login_2fa_page))
         .route("/logout", get(logout))
         .route("/authorize", get(authorize))
@@ -2440,141 +2441,240 @@ async fn trust_anchors(State(state): State<AppState>) -> impl IntoResponse {
 struct LoginQuery {
     return_to: Option<String>,
     error: Option<String>,
+    username: Option<String>,
+    step: Option<String>,
 }
 
-async fn login_page(Query(q): Query<LoginQuery>) -> impl IntoResponse {
-    let error_html = if let Some(err) = q.error {
-        format!("<p style='color: red;'>{}</p>", html_escape(&err))
+fn login_location(
+    return_to: &str,
+    username: &str,
+    password_stage: bool,
+    error: Option<&str>,
+) -> String {
+    let mut params = vec![
+        ("return_to", return_to.to_string()),
+        ("username", username.to_string()),
+        (
+            "step",
+            if password_stage {
+                "password"
+            } else {
+                "identify"
+            }
+            .to_string(),
+        ),
+    ];
+    if let Some(error) = error {
+        params.push(("error", error.to_string()));
+    }
+    url_append_query("/login".into(), &params)
+}
+
+fn foreign_login_domain(identifier: &str, local_domain: &str) -> Option<String> {
+    let domain = crate::federation::webfinger::WebFingerClient::extract_domain(identifier).ok()?;
+    (!domain.eq_ignore_ascii_case(local_domain)).then_some(domain)
+}
+
+fn home_login_hint(return_to: &str, local_domain: &str) -> Option<String> {
+    let url = url::Url::parse(&format!("https://local.invalid{return_to}")).ok()?;
+    if url.path() != "/authorize" {
+        return None;
+    }
+    let hint = url
+        .query_pairs()
+        .find(|(k, _)| k == "login_hint")?
+        .1
+        .into_owned();
+    if hint.trim().is_empty() || foreign_login_domain(&hint, local_domain).is_some() {
+        return None;
+    }
+    Some(local_login_username(&hint, local_domain).to_string())
+}
+
+fn active_login_template(password_stage: bool) -> String {
+    let mut template = include_str!("../static/login.html").to_string();
+    let inactive = if password_stage {
+        "IDENTIFIER"
+    } else {
+        "PASSWORD"
+    };
+    let start_marker = format!("<!-- {inactive}_STAGE_START -->");
+    let end_marker = format!("<!-- {inactive}_STAGE_END -->");
+    let start = template
+        .find(&start_marker)
+        .expect("bundled login stage start");
+    let end = start
+        + template[start..]
+            .find(&end_marker)
+            .expect("bundled login stage end")
+        + end_marker.len();
+    template.replace_range(start..end, "");
+    template
+}
+
+// Replace tokens once: user input containing token-like text cannot expand again.
+fn render_login_template(
+    template: &str,
+    values: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut parts = template.split("{{");
+    let mut out = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        if let Some((key, tail)) = part.split_once("}}") {
+            if let Some(value) = values.get(key.trim()) {
+                out.push_str(value);
+            } else {
+                out.push_str("{{");
+                out.push_str(key);
+                out.push_str("}}");
+            }
+            out.push_str(tail);
+        } else {
+            out.push_str("{{");
+            out.push_str(part);
+        }
+    }
+    out
+}
+
+async fn login_page(
+    State(state): State<AppState>,
+    Query(q): Query<LoginQuery>,
+) -> impl IntoResponse {
+    let return_to = safe_local_return_to(q.return_to.as_deref());
+    let domain = &state.settings.webfinger.resource_domain;
+    let hint = home_login_hint(&return_to, domain);
+    let username = q
+        .username
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_string)
+        .or_else(|| hint.clone())
+        .unwrap_or_default();
+    let password_stage = q.step.as_deref() != Some("identify")
+        && (q.step.as_deref() == Some("password") || hint.is_some())
+        && !username.is_empty()
+        && foreign_login_domain(&username, domain).is_none();
+    let username = local_login_username(&username, domain);
+    let copy: std::collections::HashMap<String, String> =
+        serde_json::from_str(include_str!("../docs/login-copy.json"))
+            .expect("valid bundled login copy");
+    let error_key = match q.error.as_deref() {
+        Some("provider") => "unknown_provider",
+        Some("request") => "no_auth_request",
+        Some("identifier") => "identifier_error",
+        _ => "generic_error",
+    };
+    let error = if q.error.is_some() {
+        copy.get(error_key).cloned().unwrap_or_default()
     } else {
         String::new()
     };
+    let issuer_host = url::Url::parse(&state.settings.issuer())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_default();
+    let mut values: std::collections::HashMap<String, String> = copy
+        .into_iter()
+        .map(|(k, v)| (format!("copy_{k}"), html_escape(&v)))
+        .collect();
+    // Error text is derived only from bundled copy, never arbitrary query text.
+    for (key, value) in [
+        ("issuer_host", issuer_host),
+        ("local_domain", domain.clone()),
+        ("username", username.to_string()),
+        ("return_to", return_to.clone()),
+        (
+            "change_url",
+            login_location(&return_to, username, false, None),
+        ),
+        ("error_message", error.to_string()),
+        (
+            "identifier_hidden",
+            if password_stage { "hidden" } else { "" }.to_string(),
+        ),
+        (
+            "password_hidden",
+            if password_stage { "" } else { "hidden" }.to_string(),
+        ),
+        (
+            "error_hidden",
+            if q.error.is_some() { "" } else { "hidden" }.to_string(),
+        ),
+    ] {
+        values.insert(key.into(), html_escape(&value));
+    }
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Html(render_login_template(
+            &active_login_template(password_stage),
+            &values,
+        )),
+    )
+}
 
-    let return_to = safe_local_return_to(q.return_to.as_deref());
-    let return_to_escaped = html_escape(&return_to);
-    let return_to_json = serde_json::to_string(&return_to).unwrap_or_else(|_| "\"/\"".to_string());
+#[derive(Debug, Deserialize)]
+struct IdentifyForm {
+    username: String,
+    return_to: Option<String>,
+}
 
-    let html = format!(
-        r#"
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Login - Barycenter OpenID Provider</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; max-width: 400px; margin: 100px auto; padding: 20px; }}
-                h1 {{ color: #333; }}
-                label {{ display: block; margin-top: 10px; }}
-                input[type="text"], input[type="password"] {{ width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }}
-                button {{ margin-top: 20px; padding: 10px 20px; background-color: #007bff; color: white; border: none; cursor: pointer; }}
-                button:hover {{ background-color: #0056b3; }}
-                .divider {{ margin: 30px 0; text-align: center; color: #666; }}
-                .divider::before, .divider::after {{ content: ""; display: inline-block; width: 40%; height: 1px; background: #ccc; vertical-align: middle; }}
-                .divider::before {{ margin-right: 10px; }}
-                .divider::after {{ margin-left: 10px; }}
-                #passkey-status {{ margin: 10px 0; padding: 10px; background: #e7f3ff; border-left: 4px solid #007bff; display: none; }}
-            </style>
-            <script type="module">
-                import init, {{
-                    supports_webauthn,
-                    supports_conditional_ui,
-                    authenticate_passkey
-                }} from '/static/wasm/barycenter_webauthn_client.js';
-
-                async function setupConditionalUI() {{
-                    try {{
-                        await init();
-
-                        if (!supports_webauthn()) {{
-                            console.log('WebAuthn not supported');
-                            return;
-                        }}
-
-                        const statusDiv = document.getElementById('passkey-status');
-                        const usernameInput = document.getElementById('username');
-
-                        if (await supports_conditional_ui()) {{
-                            statusDiv.textContent = 'Passkey autofill available';
-                            statusDiv.style.display = 'block';
-
-                            // Enable autocomplete for conditional UI
-                            usernameInput.setAttribute('autocomplete', 'username webauthn');
-
-                            // Fetch challenge for conditional UI
-                            const resp = await fetch('/webauthn/authenticate/start', {{
-                                method: 'POST',
-                                headers: {{ 'Content-Type': 'application/json' }},
-                                body: JSON.stringify({{}})
-                            }});
-
-                            if (!resp.ok) {{
-                                console.error('Failed to start passkey auth');
-                                return;
-                            }}
-
-                            const data = await resp.json();
-
-                            // Start conditional UI (non-blocking)
-                            authenticate_passkey(
-                                JSON.stringify(data.options),
-                                'conditional'
-                            ).then(async credentialJson => {{
-                                const credential = JSON.parse(credentialJson);
-
-                                // Send to server
-                                const finishResp = await fetch('/webauthn/authenticate/finish', {{
-                                    method: 'POST',
-                                    headers: {{ 'Content-Type': 'application/json' }},
-                                    body: JSON.stringify({{
-                                        credential: credential,
-                                        return_to: {return_to_json}
-                                    }})
-                                }});
-
-                                if (finishResp.ok) {{
-                                    const result = await finishResp.json();
-                                    window.location.href = result.redirect_to || '/';
-                                }} else {{
-                                    const error = await finishResp.text();
-                                    console.error('Passkey auth failed:', error);
-                                }}
-                            }}).catch(err => {{
-                                // User cancelled or error - this is fine, don't show error
-                                console.log('Passkey auth cancelled or failed:', err);
-                            }});
-                        }} else {{
-                            statusDiv.textContent = 'Passkey login available (click username field)';
-                            statusDiv.style.display = 'block';
-                        }}
-                    }} catch (err) {{
-                        console.error('WASM initialization error:', err);
-                    }}
-                }}
-
-                setupConditionalUI();
-            </script>
-        </head>
-        <body>
-            <h1>Login</h1>
-            {error_html}
-            <div id="passkey-status"></div>
-            <form method="POST" action="/login">
-                <input type="hidden" name="return_to" value="{return_to_escaped}">
-                <label>
-                    Username:
-                    <input type="text" id="username" name="username" required autofocus>
-                </label>
-                <div class="divider">or sign in with password</div>
-                <label>
-                    Password:
-                    <input type="password" name="password">
-                </label>
-                <button type="submit">Login with Password</button>
-            </form>
-        </body>
-        </html>
-    "#
-    );
-
-    Html(html)
+async fn login_identify(
+    State(state): State<AppState>,
+    Form(form): Form<IdentifyForm>,
+) -> impl IntoResponse {
+    let return_to = safe_local_return_to(form.return_to.as_deref());
+    let identifier = form.username.trim();
+    let domain = &state.settings.webfinger.resource_domain;
+    if identifier.is_empty() || identifier.len() > 254 || identifier.contains(['\r', '\n']) {
+        return Redirect::to(&login_location(
+            &return_to,
+            identifier,
+            false,
+            Some("identifier"),
+        ));
+    }
+    if let Some(foreign_domain) = foreign_login_domain(identifier, domain) {
+        let peer = if state.settings.federation.enabled {
+            crate::federation::storage::get_active_trusted_peer_by_domain(
+                &state.db,
+                &foreign_domain,
+            )
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        let trusted = peer.is_some_and(|peer| {
+            peer.authorization_endpoint.is_some()
+                && (state.settings.federation.min_verification_level != "entity_proof"
+                    || peer.verification_level.as_deref() == Some("entity_proof"))
+        });
+        if !trusted {
+            return Redirect::to(&login_location(
+                &return_to,
+                identifier,
+                false,
+                Some("provider"),
+            ));
+        }
+        if let Some(target) = federated_login_return(&return_to, identifier, domain) {
+            return Redirect::to(&target);
+        }
+        return Redirect::to(&login_location(
+            &return_to,
+            identifier,
+            false,
+            Some("request"),
+        ));
+    }
+    Redirect::to(&login_location(
+        &return_to,
+        local_login_username(identifier, domain),
+        true,
+        None,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2646,10 +2746,16 @@ async fn login_submit(
         Ok(Some(sub)) => sub,
         _ => {
             // Redirect back to login with error
-            let return_to = urlencoded(&return_to);
-            let error = urlencoded("Invalid username or password");
-            return Redirect::to(&format!("/login?error={error}&return_to={return_to}"))
-                .into_response();
+            return Redirect::to(&login_location(
+                &return_to,
+                local_login_username(
+                    form.username.trim(),
+                    &state.settings.webfinger.resource_domain,
+                ),
+                true,
+                Some("credentials"),
+            ))
+            .into_response();
         }
     };
 
@@ -4117,7 +4223,7 @@ fn federation_state_matches(headers: &HeaderMap, state: &str) -> bool {
 fn local_login_username<'a>(identifier: &'a str, local_domain: &str) -> &'a str {
     if !local_domain.is_empty() {
         if let Some((username, domain)) = identifier.split_once('@') {
-            if domain == local_domain && !username.is_empty() {
+            if domain.eq_ignore_ascii_case(local_domain) && !username.is_empty() {
                 return username;
             }
         }
@@ -4835,5 +4941,216 @@ mod federation_browser_tests {
         )
         .is_none());
         assert!(federated_login_return("/other", "user@wegmueller.it", "aopc.cloud").is_none());
+    }
+}
+
+#[cfg(test)]
+mod username_first_login_tests {
+    use super::*;
+    use migration::{Migrator, MigratorTrait};
+    use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
+    async fn state() -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.server.public_base_url = Some("https://auth.local.test".into());
+        settings.webfinger.resource_domain = "local.test".into();
+        settings.federation.enabled = true;
+        settings.federation.min_verification_level = "entity_proof".into();
+        settings.keys.jwks_path = dir.path().join("jwks.json");
+        settings.keys.private_key_path = dir.path().join("private.pem");
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        let state = AppState {
+            jwks: JwksManager::new(settings.keys.clone()).await.unwrap(),
+            webauthn: crate::webauthn_manager::WebAuthnManager::new(
+                "auth.local.test",
+                &url::Url::parse("https://auth.local.test").unwrap(),
+            )
+            .await
+            .unwrap(),
+            settings: Arc::new(settings),
+            db,
+        };
+        (state, dir)
+    }
+    fn query(
+        username: Option<&str>,
+        step: Option<&str>,
+        return_to: &str,
+        error: Option<&str>,
+    ) -> LoginQuery {
+        LoginQuery {
+            username: username.map(str::to_string),
+            step: step.map(str::to_string),
+            return_to: Some(return_to.into()),
+            error: error.map(str::to_string),
+        }
+    }
+    async fn html(state: &AppState, q: LoginQuery) -> String {
+        let response = login_page(State(state.clone()), Query(q))
+            .await
+            .into_response();
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 100_000)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+    #[tokio::test]
+    async fn identifier_page_has_no_password_control_and_escapes_account_text() {
+        let (state, _dir) = state().await;
+        let page = html(
+            &state,
+            query(Some("<img src=x onerror=alert(1)>"), None, "/", None),
+        )
+        .await;
+        assert!(page.contains("action=\"/login/identify\""));
+        assert!(!page.contains("name=\"password\""));
+        assert!(!page.contains("<img src=x"));
+        assert!(page.contains("&lt;img"));
+        assert!(!page.contains("{{"));
+        let page = html(
+            &state,
+            query(Some("alice@other.test"), Some("password"), "/", None),
+        )
+        .await;
+        assert!(!page.contains("name=\"password\""));
+    }
+    #[tokio::test]
+    async fn own_domain_hint_skips_identifier_but_change_account_returns_to_it() {
+        let (state, _dir) = state().await;
+        let context =
+            "/authorize?client_id=app&state=bound&nonce=nonce&login_hint=alice%40local.test";
+        let page = html(&state, query(None, None, context, None)).await;
+        assert!(page.contains("name=\"password\""));
+        assert!(page.contains("value=\"alice\""));
+        assert!(!page.contains("action=\"/login/identify\""));
+        assert!(page.contains("state%3Dbound"));
+        assert!(!page.contains("{{"));
+        let page = html(
+            &state,
+            query(Some("alice"), Some("identify"), context, None),
+        )
+        .await;
+        assert!(!page.contains("name=\"password\""));
+    }
+    #[tokio::test]
+    async fn identify_preserves_oidc_context_and_requires_an_active_verified_peer() {
+        let (state, _dir) = state().await;
+        let context = "/authorize?client_id=app&state=bound&nonce=nonce&code_challenge=pkce";
+        let submit = || IdentifyForm {
+            username: "alice@remote.test".into(),
+            return_to: Some(context.into()),
+        };
+        let response = login_identify(State(state.clone()), Form(submit()))
+            .await
+            .into_response();
+        assert!(response.headers()["location"]
+            .to_str()
+            .unwrap()
+            .contains("error=provider"));
+        crate::federation::storage::create_trusted_peer(
+            &state.db,
+            "remote.test",
+            "https://auth.remote.test",
+            "peer-client",
+            None,
+            "existing_only",
+            "pin_explicit",
+        )
+        .await
+        .unwrap();
+        state.db.execute(Statement::from_string(DbBackend::Sqlite, "UPDATE trusted_peers SET status='active', authorization_endpoint='https://auth.remote.test/authorize', verification_level='discovery_only'".to_string())).await.unwrap();
+        let response = login_identify(State(state.clone()), Form(submit()))
+            .await
+            .into_response();
+        assert!(response.headers()["location"]
+            .to_str()
+            .unwrap()
+            .contains("error=provider"));
+        state
+            .db
+            .execute(Statement::from_string(
+                DbBackend::Sqlite,
+                "UPDATE trusted_peers SET verification_level='entity_proof'".to_string(),
+            ))
+            .await
+            .unwrap();
+        let response = login_identify(State(state.clone()), Form(submit()))
+            .await
+            .into_response();
+        let uri = url::Url::parse(&format!(
+            "https://auth.local.test{}",
+            response.headers()["location"].to_str().unwrap()
+        ))
+        .unwrap();
+        assert_eq!(uri.path(), "/authorize");
+        let params: std::collections::HashMap<_, _> = uri.query_pairs().collect();
+        assert_eq!(params.get("state").unwrap(), "bound");
+        assert_eq!(params.get("nonce").unwrap(), "nonce");
+        assert_eq!(params.get("code_challenge").unwrap(), "pkce");
+        assert_eq!(params.get("login_hint").unwrap(), "alice@remote.test");
+        assert!(!params.contains_key("password"));
+        let response = login_identify(
+            State(state.clone()),
+            Form(IdentifyForm {
+                username: "alice@remote.test".into(),
+                return_to: Some("https://evil.test/authorize".into()),
+            }),
+        )
+        .await
+        .into_response();
+        assert!(response.headers()["location"]
+            .to_str()
+            .unwrap()
+            .contains("error=request"));
+    }
+    #[tokio::test]
+    async fn local_identifier_does_not_disclose_account_existence_and_failure_retains_it() {
+        let (state, _dir) = state().await;
+        let response = login_identify(
+            State(state.clone()),
+            Form(IdentifyForm {
+                username: "missing@local.test".into(),
+                return_to: Some("/".into()),
+            }),
+        )
+        .await
+        .into_response();
+        assert!(response.headers()["location"]
+            .to_str()
+            .unwrap()
+            .contains("step=password"));
+        let response = login_submit(
+            State(state.clone()),
+            HeaderMap::new(),
+            Form(LoginForm {
+                username: "missing@local.test".into(),
+                password: "private-wrong-password".into(),
+                return_to: Some("/".into()),
+            }),
+        )
+        .await
+        .into_response();
+        let location = response.headers()["location"].to_str().unwrap();
+        assert!(location.contains("username=missing"));
+        assert!(location.contains("step=password"));
+        assert!(location.contains("error=credentials"));
+        assert!(!location.contains("private-wrong-password"));
+    }
+    #[test]
+    fn template_replacements_cannot_expand_user_supplied_tokens() {
+        let values = std::collections::HashMap::from([
+            ("username".into(), "{{copy_title}}".into()),
+            ("copy_title".into(), "Sign in".into()),
+        ]);
+        assert_eq!(
+            render_login_template("{{username}} / {{copy_title}}", &values),
+            "{{copy_title}} / Sign in"
+        );
     }
 }
