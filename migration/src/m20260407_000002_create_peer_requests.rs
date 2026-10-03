@@ -7,8 +7,9 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
+        let timestamp = crate::timestamp_default(db.get_database_backend());
 
-        db.execute_unprepared(
+        db.execute_unprepared(&format!(
             "CREATE TABLE IF NOT EXISTS peer_requests (
                 id TEXT PRIMARY KEY,
                 requesting_issuer TEXT NOT NULL,
@@ -17,10 +18,10 @@ impl MigrationTrait for Migration {
                 callback_endpoint TEXT NOT NULL,
                 request_jws TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending_approval',
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                created_at TEXT NOT NULL DEFAULT {timestamp},
                 expires_at TEXT NOT NULL
-            )",
-        )
+            )"
+        ))
         .await?;
 
         Ok(())

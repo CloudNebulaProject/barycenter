@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "barycenter"
-version = "0.2.0-beta.11"
+version = "0.2.0-beta.12"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2388,6 +2388,7 @@ version = "0.1.0"
 dependencies = [
  "sea-orm",
  "sea-orm-migration",
+ "tokio",
 ]
 
 [[package]]
