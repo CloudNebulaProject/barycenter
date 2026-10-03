@@ -1206,7 +1206,7 @@ async fn consent_submit(
 
         // Consent is submitted with POST; 303 makes the next authorization
         // request a GET instead of replaying the form body.
-        return Redirect::to(&authorize_url).into_response();
+        return Redirect::to(&browser_authorization_destination(&authorize_url)).into_response();
     }
 
     // Invalid action
@@ -2491,6 +2491,27 @@ fn home_login_hint(return_to: &str, local_domain: &str) -> Option<String> {
     Some(local_login_username(&hint, local_domain).to_string())
 }
 
+fn is_local_authorization(target: &str) -> bool {
+    let safe = safe_local_return_to(Some(target));
+    safe == target
+        && url::Url::parse(&format!("https://local.invalid{safe}"))
+            .is_ok_and(|url| url.path() == "/authorize")
+}
+
+// A browser form policy covers the whole redirect chain. Finish POST at a
+// same-origin document before navigating into a possibly multi-provider chain.
+fn browser_authorization_destination(target: &str) -> String {
+    let target = safe_local_return_to(Some(target));
+    if is_local_authorization(&target) {
+        url_append_query(
+            "/login".into(),
+            &[("step", "continue".into()), ("return_to", target)],
+        )
+    } else {
+        target
+    }
+}
+
 fn active_login_template(password_stage: bool) -> String {
     let mut template = include_str!("../static/login.html").to_string();
     let inactive = if password_stage {
@@ -2604,12 +2625,14 @@ async fn login_page(
     ] {
         values.insert(key.into(), html_escape(&value));
     }
+    let template = if q.step.as_deref() == Some("continue") && is_local_authorization(&return_to) {
+        include_str!("../static/login-continue.html").to_string()
+    } else {
+        active_login_template(password_stage)
+    };
     (
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        Html(render_login_template(
-            &active_login_template(password_stage),
-            &values,
-        )),
+        Html(render_login_template(&template, &values)),
     )
 }
 
@@ -2799,7 +2822,7 @@ async fn login_submit(
         format!("/login/2fa?return_to={return_to}")
     } else {
         // Full session - redirect to destination
-        return_to
+        browser_authorization_destination(&return_to)
     };
 
     Response::builder()
@@ -5141,6 +5164,45 @@ mod username_first_login_tests {
         assert!(location.contains("step=password"));
         assert!(location.contains("error=credentials"));
         assert!(!location.contains("private-wrong-password"));
+    }
+    #[tokio::test]
+    async fn continuation_is_a_local_document_without_password_or_form() {
+        let (state, _dir) = state().await;
+        let target = "/authorize?client_id=app&state=bound&nonce=nonce&code_challenge=pkce";
+        let location = browser_authorization_destination(target);
+        let uri = url::Url::parse(&format!("https://auth.local.test{location}")).unwrap();
+        let params: std::collections::HashMap<_, _> = uri.query_pairs().collect();
+        assert_eq!(uri.path(), "/login");
+        assert_eq!(params.get("step").unwrap(), "continue");
+        assert_eq!(params.get("return_to").unwrap(), target);
+        let page = html(&state, query(None, Some("continue"), target, None)).await;
+        assert!(page.contains("id=\"continue-sign-in\""));
+        assert!(page.contains("/static/login-continue.js"));
+        assert!(page.contains("state=bound&amp;nonce=nonce"));
+        assert!(!page.contains("<form"));
+        assert!(!page.contains("name=\"password\""));
+        assert!(!page.contains("{{"));
+    }
+    #[tokio::test]
+    async fn continuation_cannot_navigate_to_an_external_or_non_authorization_target() {
+        let (state, _dir) = state().await;
+        for target in [
+            "https://evil.test/authorize",
+            "//evil.test/authorize",
+            "/\\evil.test/authorize",
+            "/authorize-evil?state=x",
+        ] {
+            let page = html(&state, query(None, Some("continue"), target, None)).await;
+            assert!(!page.contains("id=\"continue-sign-in\""));
+        }
+        assert_eq!(
+            browser_authorization_destination("https://evil.test/authorize"),
+            "/"
+        );
+        assert_eq!(
+            browser_authorization_destination("/login/2fa"),
+            "/login/2fa"
+        );
     }
     #[test]
     fn template_replacements_cannot_expand_user_supplied_tokens() {

@@ -52,10 +52,24 @@ at them ("the provider shown above", "this account") rather than repeating them.
   picks the new password through it. It must not suggest that the administrator
   sets or knows the password.
 
+## Continuation page
+
+- `continuation_title` / `continuation_body` appear on the short same-origin
+  page that is shown before the browser automatically opens the local
+  `/authorize` again. The body says sign-in *isn't finished yet*, so it never
+  suggests that authentication, consent or any second factor has completed
+  before the callback.
+- The fallback link reuses the existing `continue` key ("Continue"), and the
+  body refers to it by that label. It doesn't mention a time, because how long
+  the redirect takes depends on the browser.
+
 ## Passkeys
 
-- The passkey strings are used only after `login.js` confirms WebAuthn works.
-  They offer passkeys as an *option* and never say that one is enrolled.
+- The current UI does not show the passkey strings. `login.js` deliberately
+  leaves passkeys unconnected: the earlier inline flow was blocked by CSP, and
+  its finish-response contract was wrong. The strings are kept for a future,
+  validated integration. When they are used, they offer passkeys as an
+  *option* and never say that one is enrolled.
 - `passkey_failed` does not distinguish "no passkey" from "cancelled" or
   "verifier rejected". That avoids revealing enrollment and covers the common
   case where the user dismissed the prompt.
