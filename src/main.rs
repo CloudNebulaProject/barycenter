@@ -58,9 +58,6 @@ async fn main() -> Result<()> {
         }
         None => {
             // Normal server startup
-            // ensure test users exist
-            ensure_test_users(&db).await?;
-
             // init jwks (generate if missing)
             let jwks_mgr = jwks::JwksManager::new(settings.keys.clone()).await?;
 
@@ -95,25 +92,5 @@ async fn main() -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-async fn ensure_test_users(db: &sea_orm::DatabaseConnection) -> Result<()> {
-    // Check if admin exists
-    if storage::get_user_by_username(db, "admin")
-        .await
-        .into_diagnostic()?
-        .is_none()
-    {
-        storage::create_user(
-            db,
-            "admin",
-            "password123",
-            Some("admin@example.com".to_string()),
-        )
-        .await
-        .into_diagnostic()?;
-        tracing::info!("Created default admin user (username: admin, password: password123)");
-    }
     Ok(())
 }

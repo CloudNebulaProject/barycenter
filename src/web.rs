@@ -189,7 +189,7 @@ pub async fn serve(
     // - Login endpoint: 5 attempts/min per IP
     // - Authorize endpoint: 20 req/min per IP
 
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/jwks.json", get(jwks_handler))
         .route("/connect/register", post(register_client))
@@ -232,6 +232,8 @@ pub async fn serve(
             axum::routing::delete(delete_passkey_handler).patch(update_passkey_handler),
         );
 
+    let mut router = router.merge(crate::onboarding::public_router(state.db.clone()));
+
     // Conditionally add public registration route
     if state.settings.server.allow_public_registration {
         tracing::info!("Public user registration is ENABLED");
@@ -263,7 +265,13 @@ pub async fn serve(
         .parse()
         .map_err(|e| miette::miette!("bad admin addr: {e}"))?;
 
-    let admin_router = crate::admin_graphql::router(seaography_schema, jobs_schema);
+    let onboarding = crate::onboarding::admin_router(
+        state.db.clone(),
+        state.settings.server.public_base_url.clone(),
+    )
+    .map_err(|e| miette::miette!("Onboarding configuration: {e}"))?;
+    let admin_router =
+        crate::admin_graphql::router(seaography_schema, jobs_schema).merge(onboarding);
 
     // Spawn admin server in background
     let admin_listener = tokio::net::TcpListener::bind(admin_addr)

@@ -31,3 +31,5 @@ pub use session::Entity as Session;
 pub use trusted_peer::Entity as TrustedPeer;
 pub use user::Entity as User;
 pub use webauthn_challenge::Entity as WebauthnChallenge;
+
+pub mod onboarding_invitation;

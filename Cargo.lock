@@ -528,6 +528,7 @@ dependencies = [
  "serde_urlencoded",
  "serde_with",
  "sha2",
+ "subtle",
  "tempfile",
  "test-log",
  "thiserror 1.0.69",

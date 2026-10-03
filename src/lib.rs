@@ -17,3 +17,5 @@ pub mod storage;
 pub mod user_sync;
 pub mod web;
 pub mod webauthn_manager;
+
+pub mod onboarding;

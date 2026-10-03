@@ -1,0 +1,17 @@
+class BarycenterAdmin < Formula
+  desc "Issue and email single-use Barycenter account invitations"
+  homepage "https://github.com/CloudNebulaProject/barycenter"
+  head "https://github.com/CloudNebulaProject/barycenter.git", branch: "feature/email-onboarding"
+  license any_of: ["MIT", "Apache-2.0"]
+  depends_on "python@3.14"
+
+  def install
+    bin.install "cli/barycenter-admin"
+    path = bin/"barycenter-admin"
+    path.write path.read.sub("#!/usr/bin/env python3", "#!#{Formula["python@3.14"].opt_bin}/python3.14")
+  end
+
+  test do
+    assert_match "invite", shell_output("#{bin}/barycenter-admin --help")
+  end
+end
