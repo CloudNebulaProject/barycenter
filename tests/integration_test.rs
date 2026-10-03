@@ -319,6 +319,40 @@ fn consent_page_is_embedded_server_rendered_and_completes_authorization() {
         .send()
         .expect("Failed to load consent page");
     assert_eq!(consent_response.status(), reqwest::StatusCode::OK);
+    let csp = consent_response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap();
+    let callback_origin = url::Url::parse(&redirect_uri)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    assert!(csp.ends_with(&format!("form-action 'self' {callback_origin}")));
+    let invalid_context = authenticated_client
+        .get(format!("{}/consent", server.base_url()))
+        .query(&[
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", "https://attacker.example/callback"),
+            ("response_type", "code"),
+            ("scope", "openid"),
+        ])
+        .send()
+        .unwrap();
+    assert!(invalid_context.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .ends_with("form-action 'self'"));
+    let login_context = authenticated_client
+        .get(format!("{}/login", server.base_url()))
+        .query(&[(
+            "return_to",
+            auth_request.strip_prefix(server.base_url()).unwrap(),
+        )])
+        .send()
+        .unwrap();
+    assert!(login_context.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .ends_with(&format!("form-action 'self' {callback_origin}")));
     let consent_body = consent_response
         .text()
         .expect("Failed to read consent page");
