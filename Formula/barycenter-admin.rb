@@ -7,8 +7,7 @@ class BarycenterAdmin < Formula
 
   def install
     bin.install "cli/barycenter-admin"
-    path = bin/"barycenter-admin"
-    path.write path.read.sub("#!/usr/bin/env python3", "#!#{Formula["python@3.14"].opt_bin}/python3.14")
+    inreplace bin/"barycenter-admin", "#!/usr/bin/env python3", "#!#{Formula["python@3.14"].opt_bin}/python3.14"
   end
 
   test do
