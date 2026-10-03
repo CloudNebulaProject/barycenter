@@ -22,5 +22,7 @@
   "unknown_provider": "Accounts from that domain can't sign in here. Check the part after @, or enter just your username if your account is held by this provider.",
   "no_auth_request": "This sign-in request is missing or has expired. Go back to the app or site you were using and start signing in again.",
   "passkey_unavailable": "Passkeys aren't available in this browser. Sign in with your password instead.",
-  "passkey_failed": "Passkey sign-in didn't complete. Try again, or sign in with your password."
+  "passkey_failed": "Passkey sign-in didn't complete. Try again, or sign in with your password.",
+  "continuation_title": "Continuing sign-in",
+  "continuation_body": "Sign-in isn't finished yet. Your browser should continue on its own. If nothing happens, select Continue."
 }

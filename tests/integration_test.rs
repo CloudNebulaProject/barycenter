@@ -397,15 +397,24 @@ fn consent_page_is_embedded_server_rendered_and_completes_authorization() {
         reqwest::StatusCode::SEE_OTHER,
         "Consent approval must switch the follow-up request to GET"
     );
-    let authorize_location = approval_response
+    let continuation_location = approval_response
         .headers()
         .get(reqwest::header::LOCATION)
         .and_then(|value| value.to_str().ok())
         .expect("Consent approval did not redirect to authorization");
-    assert!(
-        authorize_location.starts_with("/authorize?"),
-        "Unexpected redirect after consent approval: {authorize_location}"
-    );
+    let continuation =
+        url::Url::parse(&format!("{}{}", server.base_url(), continuation_location)).unwrap();
+    assert_eq!(continuation.path(), "/login");
+    let params: std::collections::HashMap<_, _> = continuation.query_pairs().collect();
+    assert_eq!(params.get("step").map(|s| s.as_ref()), Some("continue"));
+    let authorize_location = params.get("return_to").unwrap();
+    assert!(authorize_location.starts_with("/authorize?"));
+    let boundary = authenticated_client.get(continuation.clone()).send().unwrap();
+    assert_eq!(boundary.status(), reqwest::StatusCode::OK);
+    assert_eq!(boundary.headers()["cache-control"], "no-store");
+    let boundary_html = boundary.text().unwrap();
+    assert!(boundary_html.contains("id=\"continue-sign-in\""));
+    assert!(!boundary_html.contains("<form"));
 
     let final_response = authenticated_client
         .get(format!("{}{}", server.base_url(), authorize_location))

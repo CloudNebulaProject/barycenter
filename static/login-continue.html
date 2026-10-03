@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <title>{{copy_title}} · {{issuer_host}}</title>
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="shell-head">
+      <p class="shell-title">{{copy_title}}</p>
+      <p class="origin" id="origin">
+        <span class="origin-dot" aria-hidden="true"></span>
+        <span class="origin-host"><bdi>{{issuer_host}}</bdi></span>
+      </p>
+    </header>
+
+    <div class="card">
+      <!-- Same-origin document boundary after a login or consent POST.
+           No form, no password, no inline script. The anchor is the whole fallback;
+           /static/login-continue.js follows it automatically once it has verified
+           the target is this origin's /authorize endpoint. -->
+      <section class="stage" id="stage-continue" aria-labelledby="continue-title" aria-busy="false">
+        <h1 class="stage-title" id="continue-title">{{copy_continuation_title}}</h1>
+        <p class="stage-body">{{copy_continuation_body}}</p>
+        <div class="form">
+          <a class="btn btn-primary" id="continue-sign-in" href="{{return_to}}" rel="noreferrer">{{copy_continue}}</a>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/login-continue.js" type="module"></script>
+</body>
+</html>
