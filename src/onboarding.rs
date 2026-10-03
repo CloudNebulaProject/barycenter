@@ -30,12 +30,12 @@ fn digest(value: &str) -> String {
         .collect()
 }
 #[derive(Clone)]
-struct AdminState {
-    db: DatabaseConnection,
-    base: String,
+pub(crate) struct AdminState {
+    pub(crate) db: DatabaseConnection,
+    pub(crate) base: String,
     token_hash: [u8; 32],
 }
-fn authorize(headers: &HeaderMap, state: &AdminState) -> Result<(), ApiError> {
+pub(crate) fn authorize(headers: &HeaderMap, state: &AdminState) -> Result<(), ApiError> {
     let provided = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -79,6 +79,7 @@ pub fn admin_router(db: DatabaseConnection, base: Option<String>) -> Result<Rout
             "/admin/onboarding/invitations/{username}",
             delete(revoke_handler),
         )
+        .merge(crate::password_reset::admin_routes())
         .with_state(state))
 }
 #[derive(Deserialize, Serialize)]

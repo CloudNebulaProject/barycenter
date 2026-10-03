@@ -273,7 +273,9 @@ pub async fn serve(
             axum::routing::delete(delete_passkey_handler).patch(update_passkey_handler),
         );
 
-    let mut router = router.merge(crate::onboarding::public_router(state.db.clone()));
+    let mut router = router
+        .merge(crate::onboarding::public_router(state.db.clone()))
+        .merge(crate::password_reset::public_router(state.db.clone()));
 
     // Conditionally add public registration route
     if state.settings.server.allow_public_registration {
