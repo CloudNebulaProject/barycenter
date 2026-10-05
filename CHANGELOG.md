@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Include the sign-in username in Admin CLI emails and on invitation password setup and activation confirmation pages.
+
 ### Added
 - Initial release of Barycenter OpenID Connect Identity Provider
 - OAuth 2.0 Authorization Code flow with PKCE (S256)

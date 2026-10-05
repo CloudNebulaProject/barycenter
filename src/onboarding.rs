@@ -193,23 +193,48 @@ pub struct AcceptRequest {
     pub token: String,
     pub password: String,
 }
-pub async fn accept(db: &DatabaseConnection, req: AcceptRequest) -> Result<(), ApiError> {
-    if req.token.len() != 64
-        || !req.token.bytes().all(|b| b.is_ascii_hexdigit())
-        || !(12..=128).contains(&req.password.len())
-    {
+#[derive(Deserialize)]
+struct DetailsRequest {
+    token: String,
+}
+#[derive(Serialize)]
+struct InvitationDetails {
+    username: String,
+}
+async fn active_invitation(
+    db: &DatabaseConnection,
+    token: &str,
+) -> Result<invitation::Model, ApiError> {
+    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid());
     }
-    let hash = digest(&req.token);
-    let now = chrono::Utc::now().timestamp();
-    let row = invitation::Entity::find()
-        .filter(invitation::Column::TokenHash.eq(&hash))
+    invitation::Entity::find()
+        .filter(invitation::Column::TokenHash.eq(digest(token)))
         .filter(invitation::Column::Consumed.eq(0))
-        .filter(invitation::Column::ExpiresAt.gt(now))
+        .filter(invitation::Column::ExpiresAt.gt(chrono::Utc::now().timestamp()))
         .one(db)
         .await
         .map_err(internal)?
-        .ok_or_else(invalid)?;
+        .ok_or_else(invalid)
+}
+async fn details_handler(
+    State(db): State<DatabaseConnection>,
+    Json(req): Json<DetailsRequest>,
+) -> impl IntoResponse {
+    let details = active_invitation(&db, &req.token).await.map(|row| {
+        Json(InvitationDetails {
+            username: row.username,
+        })
+    });
+    ([("cache-control", "no-store")], details)
+}
+pub async fn accept(db: &DatabaseConnection, req: AcceptRequest) -> Result<(), ApiError> {
+    if !(12..=128).contains(&req.password.len()) {
+        return Err(invalid());
+    }
+    let row = active_invitation(db, &req.token).await?;
+    let hash = digest(&req.token);
+    let now = chrono::Utc::now().timestamp();
     use argon2::{
         password_hash::{rand_core::OsRng, SaltString},
         Argon2, PasswordHasher,
@@ -285,6 +310,7 @@ pub fn public_router<S: Clone + Send + Sync + 'static>(db: DatabaseConnection) -
                 )
             }),
         )
+        .route("/onboarding/details", post(details_handler))
         .route("/onboarding/accept", post(accept_handler))
         .with_state(db)
 }
@@ -313,6 +339,91 @@ mod tests {
     }
     fn token(i: &IssuedInvitation) -> String {
         i.onboarding_url.split("#token=").nth(1).unwrap().into()
+    }
+    async fn details_response(db: &DatabaseConnection, token: &str) -> axum::response::Response {
+        use tower::ServiceExt;
+        public_router::<()>(db.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/onboarding/details")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({ "token": token }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+    #[tokio::test]
+    async fn details_show_server_username_without_consuming_invitation() {
+        let db = database().await;
+        let i = invited(&db).await;
+        let raw = token(&i);
+        let response = details_response(&db, &raw).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({ "username": "alice" })
+        );
+        accept(
+            &db,
+            AcceptRequest {
+                token: raw.clone(),
+                password: "a sufficiently long password".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            details_response(&db, &raw).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    #[tokio::test]
+    async fn details_reject_invalid_reissued_expired_and_revoked_tokens() {
+        let db = database().await;
+        for raw in ["", "short", &"g".repeat(64), &"0".repeat(64)] {
+            let response = details_response(&db, raw).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+        }
+        let old = invited(&db).await;
+        let new = invited(&db).await;
+        assert_eq!(
+            details_response(&db, &token(&old)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        invitation::Entity::update_many()
+            .col_expr(
+                invitation::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(0),
+            )
+            .exec(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            details_response(&db, &token(&new)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        let new = invited(&db).await;
+        invitation::Entity::update_many()
+            .col_expr(
+                invitation::Column::Consumed,
+                sea_orm::sea_query::Expr::value(1),
+            )
+            .exec(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            details_response(&db, &token(&new)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
     }
     #[tokio::test]
     async fn activates_once_with_verified_email_and_hashed_password() {
