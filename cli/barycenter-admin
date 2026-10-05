@@ -119,6 +119,8 @@ def send(config, receipt):
     message['Subject'] = ('Reset your illumos and OpenIndiana password' if reset else 'Your illumos and OpenIndiana account invitation')
     message.set_content(('An operator requested a password reset for your existing notes account.\n\n' if reset else
                          'You have been invited to the illumos and OpenIndiana notes service.\n\n') +
+                        'Your sign-in username is: ' + receipt['username'] + '\n' +
+                        'Use this username and your chosen password to sign in.\n\n' +
                         'Choose your password using this single-use link:\n' +
                         (receipt['reset_url'] if reset else receipt['onboarding_url']) + '\n\n' +
                         'The link expires at ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(receipt['expires_at'])) + '.\n' +

@@ -77,6 +77,9 @@ barycenter-admin invite alice@example.org --username alice --expires-in 172800
 This replaces any unredeemed invitation for the same username and invalidates
 its older token. Existing accounts cannot be invited using this API; use the dedicated reset command below.
 The recipient opens the link and chooses a password of 12–128 UTF-8 bytes.
+The email identifies the sign-in username. The activation page also displays
+the username from the server's valid invitation, including for previously issued
+links, and reminds the recipient to use it after choosing their password.
 Successful redemption creates one enabled account with verified email and a
 stable subject. No login session is automatically created. Invitations do not replace password recovery or account disablement.
 
@@ -117,7 +120,8 @@ of development tests; SMTP is mocked in CLI tests.
 
 ```sh
 python3 -m unittest discover -s cli/tests -v
-cargo test --lib onboarding::tests
+cargo nextest run --lib onboarding::tests
+node --test tests/onboarding.test.cjs
 ```
 
 Tests cover authenticated issuance, token hashing, expiry, reissue, revocation,
