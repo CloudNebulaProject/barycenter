@@ -6,6 +6,9 @@ port = 8080
 # For development/testing with WebAuthn, use:
 # public_base_url = "http://localhost:8080"
 
+# Trusted app entry point after invitation setup (starts the app's normal sign-in flow):
+# onboarding_app_url = "https://notes.example.com/"
+
 [database]
 url = "sqlite://barycenter.db?mode=rwc"
 

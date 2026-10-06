@@ -50,6 +50,8 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(client.starttls.call_args.kwargs['context'].verify_mode, admin.ssl.CERT_REQUIRED)
         message = client.send_message.call_args.args[0]
         self.assertIn(self.receipt()['onboarding_url'], message.get_content())
+        self.assertEqual(message['Subject'], 'Set up your illumos and OpenIndiana account')
+        self.assertLess(message.get_content().index(self.receipt()['onboarding_url']), message.get_content().index('sign in'))
         self.assertIn('Your sign-in username is: alice\n', message.get_content())
         self.assertIn('Use this username and your chosen password to sign in.', message.get_content())
 

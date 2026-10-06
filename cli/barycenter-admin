@@ -227,13 +227,20 @@ def send(config, receipt):
     message['From'] = smtp['from']
     message['To'] = receipt['email']
     reset = receipt.get('kind') == 'password-reset'
-    message['Subject'] = ('Reset your illumos and OpenIndiana password' if reset else 'Your illumos and OpenIndiana account invitation')
-    message.set_content(('An operator requested a password reset for your existing notes account.\n\n' if reset else
-                         'You have been invited to the illumos and OpenIndiana notes service.\n\n') +
-                        'Your sign-in username is: ' + receipt['username'] + '\n' +
-                        'Use this username and your chosen password to sign in.\n\n' +
-                        'Choose your password using this single-use link:\n' +
-                        (receipt['reset_url'] if reset else receipt['onboarding_url']) + '\n\n' +
+    message['Subject'] = ('Reset your illumos and OpenIndiana password' if reset else 'Set up your illumos and OpenIndiana account')
+    if reset:
+        body = ('An operator requested a password reset for your existing notes account.\n\n'
+                'Your sign-in username is: ' + receipt['username'] + '\n'
+                'Use this username and your chosen password to sign in.\n\n'
+                'Choose your password using this single-use link:\n' + receipt['reset_url'] + '\n\n')
+    else:
+        body = ('You have been invited to the illumos and OpenIndiana notes service.\n\n'
+                'Step 1: open this link and choose your password to set up your account:\n' +
+                receipt['onboarding_url'] + '\n\n'
+                'Step 2: after setup, open the notes service and sign in.\n'
+                'Your sign-in username is: ' + receipt['username'] + '\n'
+                'Use this username and your chosen password to sign in.\n\n')
+    message.set_content(body +
                         'The link expires at ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(receipt['expires_at'])) + '.\n' +
                         ('If you did not request this reset, ignore it; your password has not changed.\n' if reset else
                          'If you were not expecting this invitation, you can ignore this email.\n'))

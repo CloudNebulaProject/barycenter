@@ -177,3 +177,20 @@ than minting a replacement. Expired receipts require a new invitation or reset.
 
 See [error-reporting guidance](../docs/error-reporting.md) for the API contract
 and contribution rules.
+
+### Invitation setup and application destination
+
+The invitation page guides users through choosing a password before offering a
+continuation. Activation creates an account, not a signed-in session. Configure
+`server.onboarding_app_url` (or `BARYCENTER__SERVER__ONBOARDING_APP_URL`) with the
+trusted application's entry URL, for example `https://notes.example.com/`. In
+Helm use `config.server.onboardingAppUrl`. The application must initiate its usual
+OIDC flow; do not point this at the IdP's bare `/login` endpoint. HTTPS is required
+except for loopback development URLs; credentials and fragments are rejected.
+
+Without this setting, successful setup tells the user to open the app they were
+invited to and choose Sign in; it does not send them to an unserved IdP root.
+The page never accepts a destination from query parameters or the invitation
+token. The token stays in memory for retries and is removed from the address bar.
+After reloading, reopen the original email link. A lost activation response is
+reported as uncertain, never as confirmed success.

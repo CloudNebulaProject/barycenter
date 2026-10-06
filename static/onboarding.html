@@ -1,1 +1,47 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Activate your account</title><body><main><h1>Activate your account</h1><p id="account" hidden>Your sign-in username is: <strong id="username"></strong>. Use this username and your chosen password to sign in.</p><p>Choose a password of at least 12 characters. This invitation works once.</p><form id="onboarding" hidden><label>New password <input id="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button>Activate account</button></form><p id="result" role="status"></p><a href="/login">Sign in</a></main><script src="/onboarding.js" defer></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <title>Set up your account</title>
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+  <main class="shell" id="invitation" data-app-url="{{app_url}}">
+    <header class="shell-head">
+      <p class="shell-title">Account setup</p>
+      <p class="origin"><span class="origin-dot" aria-hidden="true"></span><bdi class="origin-host" id="issuer"></bdi></p>
+    </header>
+    <section class="card" aria-labelledby="title">
+      <h1 class="stage-title" id="title" tabindex="-1">Set up your account</h1>
+      <p class="stage-body" id="description">Open your invitation to choose a password. You will sign in afterwards.</p>
+      <p id="result" role="status" aria-atomic="true"></p>
+      <p class="notice notice-error" id="error" role="alert" aria-atomic="true" tabindex="-1"></p>
+      <div id="account" class="field" hidden>
+        <span class="label">Your account name</span>
+        <p class="account"><bdi id="username"></bdi></p>
+      </div>
+      <form class="form" id="onboarding" hidden>
+        <input id="saved-username" name="username" type="hidden" autocomplete="username">
+        <div class="field">
+          <label class="label" for="password">Choose a password</label>
+          <div class="input-group">
+            <input class="input" id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" enterkeyhint="done" aria-describedby="password-hint error" required>
+            <button class="btn btn-ghost" id="toggle-password" type="button" aria-controls="password" aria-label="Show password">Show</button>
+          </div>
+          <p class="hint" id="password-hint">Use at least 12 characters. This invitation works once.</p>
+        </div>
+        <button class="btn btn-primary" id="activate" type="submit">Set password and activate</button>
+      </form>
+      <button class="btn btn-primary" id="retry" type="button" hidden>Try again</button>
+      <p id="next-step" class="fineprint" hidden></p>
+      <a class="btn btn-primary" id="continue" hidden>Continue to your app</a>
+      <p id="recovery" class="fineprint" hidden>Already set your password? Open the app you were invited to and choose Sign in.</p>
+      <noscript><p class="notice notice-error">This page needs JavaScript to set up your account. Enable JavaScript, then reopen the original link from your invitation email.</p></noscript>
+    </section>
+  </main>
+  <script src="/onboarding.js" defer></script>
+</body>
+</html>

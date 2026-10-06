@@ -84,6 +84,14 @@ jobs:
       - name: Run tests
         run: cargo nextest run --verbose
 
+      - name: Set up Node for invitation UI tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify invitation UI
+        run: node --test tests/onboarding.test.cjs
+
       - name: Verify admin CLI
         run: python3 -m unittest discover -s cli/tests
 

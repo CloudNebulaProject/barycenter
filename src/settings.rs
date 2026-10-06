@@ -21,6 +21,9 @@ pub struct Server {
     pub port: u16,
     /// If set, this is used as the issuer/public base URL, e.g., https://idp.example.com
     pub public_base_url: Option<String>,
+    /// Trusted application entry point used after invitation activation.
+    #[serde(default)]
+    pub onboarding_app_url: Option<String>,
     /// Enable public user registration. If false, only admin API can create users.
     #[serde(default = "default_allow_public_registration")]
     pub allow_public_registration: bool,
@@ -191,9 +194,34 @@ impl Default for Server {
             host: "0.0.0.0".to_string(),
             port: 8080,
             public_base_url: None,
+            onboarding_app_url: None,
             allow_public_registration: false,
             admin_port: None, // Defaults to port + 1 if not set
         }
+    }
+}
+
+impl Server {
+    pub fn onboarding_destination(&self) -> Result<Option<url::Url>> {
+        let Some(value) = &self.onboarding_app_url else {
+            return Ok(None);
+        };
+        let destination = url::Url::parse(value).map_err(|_| {
+            miette::miette!("server.onboarding_app_url must be an absolute application URL")
+        })?;
+        let local = matches!(
+            destination.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]")
+        );
+        if !(destination.scheme() == "https" || (destination.scheme() == "http" && local))
+            || destination.host_str().is_none()
+            || !destination.username().is_empty()
+            || destination.password().is_some()
+            || destination.fragment().is_some()
+        {
+            return Err(miette::miette!("server.onboarding_app_url requires HTTPS (HTTP only on loopback), with no credentials or fragment"));
+        }
+        Ok(Some(destination))
     }
 }
 
@@ -256,6 +284,8 @@ impl Settings {
         let cfg = builder.build().into_diagnostic()?;
         let mut s: Settings = cfg.try_deserialize().into_diagnostic()?;
 
+        s.server.onboarding_destination()?;
+
         // Normalize jwks path to be relative to current dir
         if s.keys.jwks_path.is_relative() {
             s.keys.jwks_path = std::env::current_dir()
@@ -286,6 +316,31 @@ mod tests {
     use std::env;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn onboarding_destination_accepts_only_trusted_web_urls() {
+        let mut server = Server::default();
+        assert!(server.onboarding_destination().unwrap().is_none());
+        for value in [
+            "https://notes.example.test/",
+            "http://localhost:3000/",
+            "http://[::1]:3000/",
+        ] {
+            server.onboarding_app_url = Some(value.into());
+            assert!(server.onboarding_destination().is_ok(), "{value}");
+        }
+        for value in [
+            "/login",
+            "//evil.test",
+            "javascript:alert(1)",
+            "http://external.test/",
+            "https://user:pass@notes.test/",
+            "https://notes.test/#token=x",
+        ] {
+            server.onboarding_app_url = Some(value.into());
+            assert!(server.onboarding_destination().is_err(), "{value}");
+        }
+    }
 
     #[test]
     fn test_settings_load_defaults() {

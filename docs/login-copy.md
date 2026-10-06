@@ -38,6 +38,8 @@ at them ("the provider shown above", "this account") rather than repeating them.
 
 ## Recovery
 
+- Invitation recipients must choose a password using their email link before signing in. The identifier and generic credential-error copy point them back to that link without revealing account state.
+
 - No self-service "Forgot password" link or button. The only path is an
   administrator sending a link by CLI, so the copy says "ask your
   administrator".
