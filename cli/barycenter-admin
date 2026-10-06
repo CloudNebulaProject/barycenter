@@ -3,7 +3,10 @@
 import argparse
 import email.message
 import json
+import http.client
 import os
+import re
+import shlex
 from pathlib import Path
 import smtplib
 import ssl
@@ -17,29 +20,118 @@ import uuid
 
 
 class Failure(Exception):
-    pass
+    def __init__(self, message, *, code='barycenter::cli::failure', help=None,
+                 status=None, request_id=None):
+        super().__init__(message)
+        self.code = code
+        self.help = help
+        self.status = status
+        self.request_id = request_id
+
+
+def display_text(value):
+    # Remote strings and local paths must not inject terminal control sequences.
+    return ''.join(c if c.isprintable() else ' ' for c in str(value))
+
+
+def report(error, context, output_format):
+    diagnostic = {'code': error.code, 'message': str(error), 'context': context}
+    for name in ('help', 'status', 'request_id'):
+        value = getattr(error, name)
+        if value is not None:
+            diagnostic[name] = value
+    if output_format == 'json':
+        print(json.dumps(diagnostic), file=sys.stderr)
+        return
+    print('error[' + display_text(error.code) + ']: ' + display_text(context), file=sys.stderr)
+    print('  ' + display_text(error), file=sys.stderr)
+    if error.help:
+        print('  help: ' + display_text(error.help), file=sys.stderr)
+    if error.status is not None:
+        print('  HTTP ' + str(error.status), file=sys.stderr)
+    if error.request_id:
+        print('  Request ID: ' + display_text(error.request_id), file=sys.stderr)
+
+
+def read_private(path, credential=False):
+    path = Path(path).expanduser()
+    kind = 'Credential' if credential else 'Private file'
+    try:
+        info = path.stat()
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise Failure(kind + ' must belong to you and have mode 0600: ' + str(path),
+                          code='barycenter::config::permissions',
+                          help='Check ownership and run chmod 600 ' + shlex.quote(str(path)))
+        return path.read_text()
+    except OSError as error:
+        reason = 'File does not exist' if isinstance(error, FileNotFoundError) else 'File cannot be read'
+        raise Failure(reason + ': ' + str(path), code='barycenter::config::read',
+                      help='Check the configured path and file permissions.') from None
+
+
+def api_failure(error, method, path):
+    status = error.code
+    fallback = Failure('Admin API rejected the request.', code='barycenter::api::http', status=status)
+    if status == 401:
+        fallback.help = 'Check the configured admin credential; the API did not accept it.'
+    elif status == 403:
+        fallback.help = 'Check that the configured admin identity is authorized for this operation.'
+    elif status == 409 and method == 'POST' and path == '/admin/password-resets':
+        fallback.help = ('Recovery requires an existing, enabled account with a usable email address. '
+                         'If the account is awaiting activation, use or resend its invitation instead.')
+    elif status == 409 and method == 'POST' and path == '/admin/onboarding/invitations':
+        fallback.help = 'An account may already exist. Check its status and use reset-password for recovery.'
+    elif status >= 500:
+        fallback.help = 'Check the service logs before retrying; the operation may have partially completed.'
+    try:
+        with error:
+            payload = error.read(16385)
+        if len(payload) > 16384:
+            return fallback
+        # Only recognized legacy text is displayed; HTML/proxy bodies stay private.
+        legacy = payload.decode('utf-8').strip()
+        if legacy in ('Account is not eligible for email recovery',
+                      'User already exists; invitations cannot reset accounts',
+                      'Invalid lifetime', 'Invalid username, email or lifetime',
+                      'Unauthorized', 'Operation failed'):
+            fallback.args = (legacy + '.',)
+            return fallback
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            return fallback
+        code, message = data.get('code'), data.get('message')
+        if not isinstance(code, str) or not re.fullmatch(r'barycenter::[a-z0-9_:]{1,128}', code):
+            return fallback
+        if not isinstance(message, str) or not message.strip() or len(message) > 2048:
+            return fallback
+        help_text, request_id = data.get('help'), data.get('request_id')
+        return Failure(message, code=code, status=status,
+                       help=help_text if isinstance(help_text, str) and len(help_text) <= 4096 else fallback.help,
+                       request_id=request_id if isinstance(request_id, str) and len(request_id) <= 128 else None)
+    except (ValueError, UnicodeError, OSError, http.client.HTTPException):
+        return fallback
 
 
 def private_json(path):
     path = Path(path).expanduser()
-    info = path.stat()
-    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-        raise Failure('Private file must belong to you and have mode 0600: ' + str(path))
-    return json.loads(path.read_text())
+    try:
+        return json.loads(read_private(path))
+    except ValueError:
+        raise Failure('Invalid JSON in ' + str(path), code='barycenter::config::json',
+                      help='Correct the JSON syntax in this file.') from None
 
 
 def secret(path):
-    path = Path(path).expanduser()
-    info = path.stat()
-    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-        raise Failure('Credential file must belong to you and have mode 0600')
-    value = path.read_text().strip()
+    value = read_private(path, credential=True).strip()
     if not value or any(c in value for c in '\r\n\x00'):
-        raise Failure('Invalid credential file')
+        raise Failure('Invalid credential file', code='barycenter::config::credential',
+                      help='The credential file must contain one nonempty line.')
     return value
 
 
 def endpoint(value):
+    if not isinstance(value, str):
+        raise Failure('Endpoint must be a URL string.', code='barycenter::config::endpoint')
     url = urllib.parse.urlsplit(value)
     if url.username or url.password or url.query or url.fragment or not url.hostname:
         raise Failure('Invalid endpoint URL')
@@ -69,27 +161,46 @@ def request(config, method, path, data=None):
         with opener.open(req, timeout=15) as response:
             payload = response.read(65537)
             if len(payload) > 65536:
-                raise Failure('Admin API response too large')
-            return json.loads(payload) if payload else None
+                raise Failure('Admin API response too large', code='barycenter::api::response')
+            try:
+                return json.loads(payload) if payload else None
+            except (ValueError, UnicodeError):
+                raise Failure('Admin API returned invalid JSON.', code='barycenter::api::response',
+                              help='Check the API endpoint and service logs; the operation may have completed.') from None
     except urllib.error.HTTPError as error:
-        raise Failure('Admin API returned HTTP ' + str(error.code)) from None
-    except (urllib.error.URLError, TimeoutError):
-        raise Failure('Admin API unreachable or TLS validation failed') from None
+        raise api_failure(error, method, path) from None
+    except (ssl.SSLError, urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        reason = getattr(error, 'reason', error)
+        tls = isinstance(reason, ssl.SSLError)
+        raise Failure('Admin API TLS validation failed.' if tls else 'Could not complete the Admin API connection.',
+                      code='barycenter::api::tls' if tls else 'barycenter::api::connection',
+                      help=('Check the server certificate and configured CA file.' if tls else
+                            'Check connectivity and the admin endpoint. If the request was sent, its outcome may be unknown.')) from None
 
 
 def validate_receipt(config, receipt):
     public = endpoint(config['public_url'])
+    if not isinstance(receipt, dict):
+        raise Failure('Expected a receipt object.', code='barycenter::receipt::invalid')
     kind = receipt.get('kind', 'invitation')
     if kind not in ('invitation', 'password-reset'):
         raise Failure('Unknown receipt kind')
-    link = receipt['reset_url'] if kind == 'password-reset' else receipt['onboarding_url']
+    link = receipt.get('reset_url') if kind == 'password-reset' else receipt.get('onboarding_url')
+    if (not isinstance(link, str)
+            or not isinstance(receipt.get('username'), str)
+            or not isinstance(receipt.get('email'), str)
+            or type(receipt.get('expires_at')) is not int):
+        raise Failure('Receipt fields are missing or have invalid types.',
+                      code='barycenter::receipt::invalid', help='Check the receipt format and API version.')
     url = urllib.parse.urlsplit(link)
     expected = urllib.parse.urlsplit(public + ('/password-reset' if kind == 'password-reset' else '/onboarding'))
     token = urllib.parse.parse_qs(url.fragment).get('token', [''])[0]
     if (url.scheme, url.netloc, url.path, url.query) != (expected.scheme, expected.netloc, expected.path, '') or len(token) != 64 or any(c not in '0123456789abcdef' for c in token):
-        raise Failure('Unexpected onboarding URL from Admin API')
+        raise Failure('Unexpected URL in the receipt.', code='barycenter::receipt::url',
+                      help='Check that the receipt belongs to the configured public endpoint.')
     if receipt['expires_at'] <= time.time():
-        raise Failure('Invitation expired; issue a new invitation')
+        raise Failure('The ' + kind + ' link has expired.', code='barycenter::receipt::expired',
+                      help='Issue a new password reset.' if kind == 'password-reset' else 'Issue a new invitation.')
     address = receipt['email']
     if any(c.isspace() for c in address) or address.count('@') != 1:
         raise Failure('Invalid recipient email')
@@ -140,13 +251,24 @@ def send(config, receipt):
             client.login(smtp['username'], secret(smtp['password_file']))
             refused = client.send_message(message)
             if refused:
-                raise Failure('SMTP refused the recipient')
+                raise Failure('SMTP refused the recipient.', code='barycenter::smtp::recipient')
+    except smtplib.SMTPAuthenticationError:
+        raise Failure('SMTP authentication failed.', code='barycenter::smtp::authentication',
+                      help='Check the configured SMTP username and credential file.') from None
+    except ssl.SSLError:
+        raise Failure('SMTP TLS validation failed.', code='barycenter::smtp::tls',
+                      help='Check the SMTP hostname and certificate trust.') from None
+    except smtplib.SMTPRecipientsRefused:
+        raise Failure('SMTP refused the recipient.', code='barycenter::smtp::recipient') from None
     except (smtplib.SMTPException, OSError):
-        raise Failure('SMTP delivery failed; retry using the saved receipt. Delivery may be ambiguous.') from None
+        raise Failure('SMTP delivery failed; delivery may be ambiguous.',
+                      code='barycenter::smtp::delivery') from None
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--error-format', choices=('text', 'json'), default='text',
+                        help='Format diagnostics on stderr (default: text)')
     parser.add_argument('--config', default='~/.config/barycenter-admin/config.json')
     commands = parser.add_subparsers(dest='command', required=True)
     reset = commands.add_parser('reset-password', help='Email a single-use reset link to the account’s existing email address')
@@ -166,8 +288,15 @@ def main(argv=None):
     revoke.add_argument('--username', required=True)
     args = parser.parse_args(argv)
     os.umask(0o077)
+    target = getattr(args, 'username', None)
+    context = args.command + ((' for ' + repr(target)) if target else '')
+    issued = False
+    saved_path = None
+    sending = False
     try:
         config = private_json(args.config)
+        if not isinstance(config, dict):
+            raise Failure('Configuration must be a JSON object.', code='barycenter::config::invalid')
         if args.command == 'invite':
             # Check delivery credentials and receipt location before minting a token.
             if not args.no_send:
@@ -175,10 +304,13 @@ def main(argv=None):
             receipt = request(config, 'POST', '/admin/onboarding/invitations', {
                 'username': args.username, 'email': args.email, 'expires_in': args.expires_in,
             })
+            issued = True
             validate_receipt(config, receipt)
             path = save_receipt(config, receipt)
+            saved_path = path
             print('Private invitation receipt: ' + str(path))
             if not args.no_send:
+                sending = True
                 send(config, receipt)
                 print('Invitation accepted by SMTP for ' + receipt['email'])
         elif args.command == 'reset-password':
@@ -187,11 +319,16 @@ def main(argv=None):
             receipt = request(config, 'POST', '/admin/password-resets', {
                 'username': args.username, 'expires_in': args.expires_in,
             })
+            issued = True
+            if not isinstance(receipt, dict):
+                raise Failure('Admin API returned an invalid receipt.', code='barycenter::api::response')
             receipt['kind'] = 'password-reset'
             validate_receipt(config, receipt)
             path = save_receipt(config, receipt)
+            saved_path = path
             print('Private password reset receipt: ' + str(path))
             if not args.no_send:
+                sending = True
                 send(config, receipt)
                 print('Password reset accepted by SMTP for ' + receipt['email'])
         elif args.command == 'revoke-reset':
@@ -199,15 +336,39 @@ def main(argv=None):
             print('Password reset revoked')
         elif args.command == 'send':
             receipt = private_json(args.receipt)
+            validate_receipt(config, receipt)
+            saved_path = Path(args.receipt).expanduser()
+            sending = True
             send(config, receipt)
             print('Email accepted by SMTP for ' + receipt['email'])
         else:
             request(config, 'DELETE', '/admin/onboarding/invitations/' + urllib.parse.quote(args.username, safe=''))
             print('Invitation revoked')
         return 0
-    except (Failure, KeyError, ValueError, OSError):
-        error = sys.exc_info()[1]
-        print(str(error) if isinstance(error, Failure) else 'Invalid configuration or private file', file=sys.stderr)
+    except (Failure, KeyError, ValueError, TypeError, OSError) as error:
+        if not isinstance(error, Failure):
+            if isinstance(error, KeyError):
+                error = Failure('A required configuration or receipt field is missing.',
+                                code='barycenter::config::missing_field',
+                                help='Check the configuration and receipt format for this command.')
+            else:
+                error = Failure('Could not read or save the configuration or receipt.',
+                                code='barycenter::config::invalid',
+                                help='Check field types, file permissions, and available disk space.')
+        if sending and saved_path is not None:
+            context = ('Link created and saved; email delivery did not complete'
+                       if issued else 'Email delivery did not complete; receipt preserved')
+            command = ['barycenter-admin']
+            if args.config != '~/.config/barycenter-admin/config.json':
+                command += ['--config', args.config]
+            command += ['send', '--receipt', str(saved_path)]
+            retry = 'Retry delivery using the existing receipt: ' + shlex.join(command)
+            error.help = ((error.help + ' ') if error.help else '') + retry
+        elif issued:
+            context += ': link created, but the receipt could not be validated or saved'
+            error.help = ((error.help + ' ') if error.help else '') + (
+                'No email was sent. Fix the local problem before issuing a replacement link.')
+        report(error, context, args.error_format)
         return 1
 
 

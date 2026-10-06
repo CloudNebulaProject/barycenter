@@ -266,3 +266,9 @@ cargo nextest run --release
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same license as the project.
+
+### Error reporting
+
+Follow [the error-reporting guidance](docs/error-reporting.md) when changing errors,
+admin APIs, or CLI failure paths. Include actionable help and preserve partial
+completion and unknown outcomes.

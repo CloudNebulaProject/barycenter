@@ -156,3 +156,24 @@ For homelab TLS, configure `admin_url` as `https://barycenter-admin.lab.home` an
 public CA certificates, never private keys. HTTPS verification stays enabled.
 The admin reset paths must be routed only on the internal gateway; only the reset
 page, script and POST redemption endpoint belong on the public auth gateway.
+
+## Error diagnostics
+
+Failures include command context, a stable diagnostic code, actionable help, and
+HTTP status/request ID when available. The CLI accepts structured admin errors
+and known legacy messages. A legacy reset 409 explains eligibility requirements;
+it cannot establish whether an invitation is pending.
+
+To emit a JSON diagnostic on stderr (successful output is unchanged):
+
+```sh
+barycenter-admin --error-format json reset-password alice
+```
+
+When email delivery fails after a link has been created, the CLI keeps its private
+receipt and prints the exact `send --receipt` retry command, including a custom
+`--config` if used. Delivery may be ambiguous; retrying sends the same link rather
+than minting a replacement. Expired receipts require a new invitation or reset.
+
+See [error-reporting guidance](../docs/error-reporting.md) for the API contract
+and contribution rules.
