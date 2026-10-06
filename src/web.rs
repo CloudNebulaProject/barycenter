@@ -289,7 +289,10 @@ pub async fn serve(
         );
 
     let mut router = router
-        .merge(crate::onboarding::public_router(state.db.clone()))
+        .merge(crate::onboarding::public_router(
+            state.db.clone(),
+            state.settings.server.onboarding_destination()?,
+        ))
         .merge(crate::password_reset::public_router(state.db.clone()));
 
     // Conditionally add public registration route
@@ -2958,7 +2961,7 @@ async fn login_2fa_page(
     .into_response()
 }
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

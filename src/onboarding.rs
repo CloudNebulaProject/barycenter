@@ -287,15 +287,20 @@ async fn accept_handler(
     accept(&db, req).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-pub fn public_router<S: Clone + Send + Sync + 'static>(db: DatabaseConnection) -> Router<S> {
+pub fn public_router<S: Clone + Send + Sync + 'static>(
+    db: DatabaseConnection,
+    app_url: Option<url::Url>,
+) -> Router<S> {
+    let page = include_str!("../static/onboarding.html").replace(
+        "{{app_url}}",
+        &crate::web::html_escape(app_url.as_ref().map_or("", |url| url.as_str())),
+    );
     Router::new()
         .route(
             "/onboarding",
-            get(|| async {
-                (
-                    [("cache-control", "no-store")],
-                    Html(include_str!("../static/onboarding.html")),
-                )
+            get(move || {
+                let page = page.clone();
+                async move { ([("cache-control", "no-store")], Html(page)) }
             }),
         )
         .route(
@@ -342,7 +347,7 @@ mod tests {
     }
     async fn details_response(db: &DatabaseConnection, token: &str) -> axum::response::Response {
         use tower::ServiceExt;
-        public_router::<()>(db.clone())
+        public_router::<()>(db.clone(), None)
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
@@ -356,6 +361,39 @@ mod tests {
             .await
             .unwrap()
     }
+    #[tokio::test]
+    async fn page_uses_only_configured_application_destination() {
+        use tower::ServiceExt;
+        let db = database().await;
+        for destination in [
+            None,
+            Some(url::Url::parse("https://notes.example.test/?a=1&b=2").unwrap()),
+        ] {
+            let response = public_router::<()>(db.clone(), destination.clone())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/onboarding?return_to=https://untrusted.example/")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(!html.contains("untrusted.example"));
+            assert!(!html.contains("href=\"/login"));
+            assert!(!html.contains("{{app_url}}"));
+            if destination.is_some() {
+                assert!(html.contains("https://notes.example.test/?a=1&amp;b=2"));
+            } else {
+                assert!(html.contains("data-app-url=\"\""));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn details_show_server_username_without_consuming_invitation() {
         let db = database().await;

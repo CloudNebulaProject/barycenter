@@ -219,7 +219,7 @@ body {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
-.btn[disabled], .btn[aria-busy="true"] {
+.btn[disabled], .btn[aria-disabled="true"], .btn[aria-busy="true"] {
   opacity: 0.6;
   cursor: progress;
 }
@@ -299,3 +299,8 @@ body {
   .origin { border: 1px solid CanvasText; }
   .account { border-style: dashed; }
 }
+
+/* Invitation setup shares the sign-in shell, with one action per stage. */
+#invitation #account { margin-bottom: 18px; }
+#invitation #continue { display: block; text-align: center; text-decoration: none; margin-top: 18px; }
+#invitation #toggle-password { min-height: 44px; }

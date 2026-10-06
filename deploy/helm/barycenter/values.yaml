@@ -106,6 +106,8 @@ config:
     host: "0.0.0.0"
     port: 8080
     # publicBaseUrl: "https://idp.example.com"
+    # Trusted application entry point, not the IdP /login endpoint.
+    # onboardingAppUrl: "https://notes.example.com/"
 
   database:
     url: "sqlite:///app/data/barycenter.db?mode=rwc"
