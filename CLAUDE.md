@@ -170,6 +170,8 @@ Implements OpenID Connect and OAuth 2.0 endpoints:
 
 ### Error Handling (`src/errors.rs`)
 Defines `CrabError` for internal error handling with conversions from common error types.
+Follow [the error-reporting guidance](docs/error-reporting.md) for typed causes,
+API diagnostics, CLI recovery, and partial completion.
 
 ## Key Implementation Details
 
