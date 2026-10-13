@@ -124,10 +124,16 @@ pub struct OidcRpClient {
 }
 
 impl OidcRpClient {
-    /// Create a new `OidcRpClient` with a 15-second timeout and Barycenter user-agent.
+    /// Create a new `OidcRpClient` with bounded timeouts and Barycenter user-agent.
+    ///
+    /// The total timeout stays below the common 15-second gateway upstream
+    /// timeout, so an unreachable peer fails inside Barycenter, which logs it and
+    /// answers the browser. Otherwise the gateway cuts the connection first and
+    /// the handler is dropped without a trace.
     pub fn new() -> Self {
         let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
             .user_agent("Barycenter/0.2")
             .build()
             .expect("failed to build reqwest client");
