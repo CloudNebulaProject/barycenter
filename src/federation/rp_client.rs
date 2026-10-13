@@ -682,8 +682,18 @@ mod tests {
             .validate_id_token(&token, &peer, "bound-nonce")
             .unwrap();
         assert_eq!(claims.sub, "native-subject");
-        assert_eq!(claims.iat, seconds);
-        assert_eq!(claims.auth_time, Some(seconds - 0.25));
+        // Fractional NumericDates round-trip through JSON text, so compare within
+        // a microsecond rather than bit-for-bit.
+        assert!(
+            (claims.iat - seconds).abs() < 1e-6,
+            "iat {} vs {seconds}",
+            claims.iat
+        );
+        let auth_time = claims.auth_time.expect("auth_time");
+        assert!(
+            (auth_time - (seconds - 0.25)).abs() < 1e-6,
+            "auth_time {auth_time} vs {seconds}"
+        );
         assert!(matches!(
             client.validate_id_token(&token, &peer, "other-nonce"),
             Err(RpClientError::NonceMismatch { .. })
