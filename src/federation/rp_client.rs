@@ -124,10 +124,16 @@ pub struct OidcRpClient {
 }
 
 impl OidcRpClient {
-    /// Create a new `OidcRpClient` with a 15-second timeout and Barycenter user-agent.
+    /// Create a new `OidcRpClient` with bounded timeouts and Barycenter user-agent.
+    ///
+    /// The total timeout stays below the common 15-second gateway upstream
+    /// timeout, so an unreachable peer fails inside Barycenter, which logs it and
+    /// answers the browser. Otherwise the gateway cuts the connection first and
+    /// the handler is dropped without a trace.
     pub fn new() -> Self {
         let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
             .user_agent("Barycenter/0.2")
             .build()
             .expect("failed to build reqwest client");
@@ -676,8 +682,18 @@ mod tests {
             .validate_id_token(&token, &peer, "bound-nonce")
             .unwrap();
         assert_eq!(claims.sub, "native-subject");
-        assert_eq!(claims.iat, seconds);
-        assert_eq!(claims.auth_time, Some(seconds - 0.25));
+        // Fractional NumericDates round-trip through JSON text, so compare within
+        // a microsecond rather than bit-for-bit.
+        assert!(
+            (claims.iat - seconds).abs() < 1e-6,
+            "iat {} vs {seconds}",
+            claims.iat
+        );
+        let auth_time = claims.auth_time.expect("auth_time");
+        assert!(
+            (auth_time - (seconds - 0.25)).abs() < 1e-6,
+            "auth_time {auth_time} vs {seconds}"
+        );
         assert!(matches!(
             client.validate_id_token(&token, &peer, "other-nonce"),
             Err(RpClientError::NonceMismatch { .. })

@@ -25,6 +25,12 @@ if (anchor) {
   if (target) {
     const stage = document.getElementById('stage-continue');
     if (stage) stage.setAttribute('aria-busy', 'true');
+    // Disarm the link before leaving. Safari keeps this page visible while the
+    // redirect chain runs; activating the link again would start a second
+    // authorization, and a federating relying party would then receive a
+    // second callback for a state its first callback already consumed.
+    anchor.removeAttribute('href');
+    anchor.setAttribute('aria-disabled', 'true');
     // Replace, not assign: the continuation page must not remain in history,
     // so Back returns to where the user started rather than re-running login.
     window.location.replace(target.href);

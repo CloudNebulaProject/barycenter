@@ -100,6 +100,9 @@ impl MigrationTrait for Migration {
     }
 }
 
+// Identifiers are persisted table/column names; the `DeviceCode` column
+// legitimately shares the enum's name.
+#[allow(clippy::enum_variant_names)]
 #[derive(DeriveIden)]
 enum DeviceCode {
     Table,

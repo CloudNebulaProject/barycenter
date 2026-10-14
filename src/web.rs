@@ -4234,9 +4234,20 @@ async fn device_consent(
 // =============================================================================
 // Federation: P2P identity brokering
 
-fn federation_state_matches(headers: &HeaderMap, state: &str) -> bool {
+/// How a federation callback's `state` relates to this browser's state cookie.
+#[derive(Debug, PartialEq, Eq)]
+enum FederationBrowserState {
+    Matches,
+    /// No live cookie: the callback was already completed (which clears the
+    /// cookie), it expired, or it was opened in a different browser.
+    Missing,
+    /// A different login started later in this browser and replaced the cookie.
+    Mismatch,
+}
+
+fn federation_browser_state(headers: &HeaderMap, state: &str) -> FederationBrowserState {
     use subtle::ConstantTimeEq;
-    headers
+    let cookie = headers
         .get(axum::http::header::COOKIE)
         .and_then(|h| h.to_str().ok())
         .and_then(|cookies| {
@@ -4244,7 +4255,14 @@ fn federation_state_matches(headers: &HeaderMap, state: &str) -> bool {
                 .split(';')
                 .find_map(|c| c.trim().strip_prefix("barycenter_federation_state="))
         })
-        .is_some_and(|cookie| bool::from(cookie.as_bytes().ct_eq(state.as_bytes())))
+        .filter(|cookie| !cookie.is_empty());
+    match cookie {
+        None => FederationBrowserState::Missing,
+        Some(cookie) if bool::from(cookie.as_bytes().ct_eq(state.as_bytes())) => {
+            FederationBrowserState::Matches
+        }
+        Some(_) => FederationBrowserState::Mismatch,
+    }
 }
 fn local_login_username<'a>(identifier: &'a str, local_domain: &str) -> &'a str {
     if !local_domain.is_empty() {
@@ -4513,8 +4531,34 @@ async fn federation_callback(
         None => return (StatusCode::BAD_REQUEST, "Missing code parameter").into_response(),
     };
 
-    if !federation_state_matches(&headers, fed_state) {
-        return (StatusCode::BAD_REQUEST, "Federation browser state mismatch").into_response();
+    match federation_browser_state(&headers, fed_state) {
+        FederationBrowserState::Matches => {}
+        FederationBrowserState::Missing => {
+            tracing::warn!(
+                reason = "browser_state_missing",
+                "Rejected federation callback: no federation state cookie (already used, expired, or another browser)"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                "This federated sign-in response was already used or has expired \
+                 (barycenter::federation::browser_state_missing). If you just signed in, \
+                 return to the application. Otherwise start the sign-in again from the application.",
+            )
+                .into_response();
+        }
+        FederationBrowserState::Mismatch => {
+            tracing::warn!(
+                reason = "browser_state_mismatch",
+                "Rejected federation callback: state does not match this browser's newest federated sign-in"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                "A newer sign-in was started in this browser, so this response was rejected \
+                 (barycenter::federation::browser_state_mismatch). Finish the newest sign-in, \
+                 or return to the application and start again.",
+            )
+                .into_response();
+        }
     }
 
     // Look up the federation auth request by state
@@ -4921,20 +4965,70 @@ mod federation_browser_tests {
     }
     #[test]
     fn callback_requires_exact_browser_state_cookie() {
+        use FederationBrowserState::*;
         let mut h = HeaderMap::new();
-        assert!(!federation_state_matches(&h, "correct-state"));
+        assert_eq!(federation_browser_state(&h, "correct-state"), Missing);
+        h.insert(
+            axum::http::header::COOKIE,
+            "barycenter_federation_state=".parse().unwrap(),
+        );
+        assert_eq!(federation_browser_state(&h, "correct-state"), Missing);
         h.insert(
             axum::http::header::COOKIE,
             "barycenter_federation_state=wrong-state".parse().unwrap(),
         );
-        assert!(!federation_state_matches(&h, "correct-state"));
+        assert_eq!(federation_browser_state(&h, "correct-state"), Mismatch);
         h.insert(
             axum::http::header::COOKIE,
             "other=ignored; barycenter_federation_state=correct-state"
                 .parse()
                 .unwrap(),
         );
-        assert!(federation_state_matches(&h, "correct-state"));
+        assert_eq!(federation_browser_state(&h, "correct-state"), Matches);
+    }
+    #[tokio::test]
+    async fn repeated_federation_callback_explains_used_state_without_db_access() {
+        // A second callback after a successful one arrives without the cleared
+        // cookie; the browser must get recovery guidance, not a bare mismatch.
+        let (state, _dir) = super::username_first_login_tests::state().await;
+        let resp = federation_callback(
+            State(state.clone()),
+            Query(FederationCallbackQuery {
+                code: Some("second-code".into()),
+                state: Some("consumed-state".into()),
+                error: None,
+                error_description: None,
+            }),
+            HeaderMap::new(),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("barycenter::federation::browser_state_missing"));
+        assert!(body.contains("return to the application"));
+
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::COOKIE,
+            "barycenter_federation_state=newer-state".parse().unwrap(),
+        );
+        let resp = federation_callback(
+            State(state),
+            Query(FederationCallbackQuery {
+                code: Some("code".into()),
+                state: Some("older-state".into()),
+                error: None,
+                error_description: None,
+            }),
+            h,
+        )
+        .await
+        .into_response();
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("barycenter::federation::browser_state_mismatch"));
     }
     #[test]
     fn home_provider_accepts_its_domain_qualified_username() {
@@ -4976,7 +5070,7 @@ mod username_first_login_tests {
     use migration::{Migrator, MigratorTrait};
     use sea_orm::{ConnectionTrait, DbBackend, Statement};
 
-    async fn state() -> (AppState, tempfile::TempDir) {
+    pub(super) async fn state() -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
         settings.server.public_base_url = Some("https://auth.local.test".into());
