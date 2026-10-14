@@ -5259,7 +5259,7 @@ mod username_first_login_tests {
         assert_eq!(params.get("return_to").unwrap(), target);
         let page = html(&state, query(None, Some("continue"), target, None)).await;
         assert!(page.contains("id=\"continue-sign-in\""));
-        assert!(page.contains("/static/login-continue.js"));
+        assert!(page.contains("/static/login-continue.js?v=callback-once-1"));
         assert!(page.contains("state=bound&amp;nonce=nonce"));
         assert!(!page.contains("<form"));
         assert!(!page.contains("name=\"password\""));
