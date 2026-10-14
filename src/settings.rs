@@ -56,7 +56,7 @@ pub struct Keys {
     pub private_key_path: PathBuf,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct WebFinger {
     /// Enable WebFinger integration with an external webfingerd instance.
     #[serde(default)]
@@ -76,18 +76,6 @@ pub struct WebFinger {
     /// This is typically the apex domain, not the auth subdomain.
     #[serde(default)]
     pub resource_domain: String,
-}
-
-impl Default for WebFinger {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            base_url: String::new(),
-            service_token: String::new(),
-            service_token_file: None,
-            resource_domain: String::new(),
-        }
-    }
 }
 
 impl WebFinger {
@@ -353,7 +341,7 @@ mod tests {
 
         assert_eq!(settings.server.host, "0.0.0.0");
         assert_eq!(settings.server.port, 8080);
-        assert_eq!(settings.server.allow_public_registration, false);
+        assert!(!settings.server.allow_public_registration);
         assert_eq!(settings.database.url, "sqlite://barycenter.db?mode=rwc");
         assert_eq!(settings.keys.alg, "RS256");
     }
@@ -391,7 +379,7 @@ private_key_path = "test_private.pem"
             settings.server.public_base_url,
             Some("https://idp.example.com".to_string())
         );
-        assert_eq!(settings.server.allow_public_registration, true);
+        assert!(settings.server.allow_public_registration);
         assert_eq!(
             settings.database.url,
             "postgresql://user:pass@localhost/testdb"
@@ -498,9 +486,9 @@ private_key_path = "relative/private.pem"
         let settings = Settings::default();
 
         // Should default to false (secure by default)
-        assert_eq!(settings.server.allow_public_registration, false);
+        assert!(!settings.server.allow_public_registration);
 
         // Also test the default function directly
-        assert_eq!(default_allow_public_registration(), false);
+        assert!(!default_allow_public_registration());
     }
 }

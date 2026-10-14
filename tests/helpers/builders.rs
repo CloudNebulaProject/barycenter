@@ -233,7 +233,6 @@ impl PasskeyBuilder {
     pub async fn create(self, db: &DatabaseConnection) -> entities::passkey::Model {
         // Create a minimal test passkey
         // In real tests, you'd use MockWebAuthnCredential to generate this
-        use webauthn_rs::prelude::*;
 
         // Create a test passkey with minimal data
         use base64ct::{Base64UrlUnpadded, Encoding};

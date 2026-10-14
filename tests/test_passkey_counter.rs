@@ -21,7 +21,7 @@ async fn test_counter_extracted_at_registration() {
     let db = test_db.connection();
 
     // Create a user
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
@@ -38,7 +38,7 @@ async fn test_counter_extracted_at_registration() {
     });
 
     storage::create_passkey(
-        &db,
+        db,
         "test_credential_id",
         &user.subject,
         &passkey_json.to_string(),
@@ -53,7 +53,7 @@ async fn test_counter_extracted_at_registration() {
     .expect("Failed to create passkey");
 
     // Verify passkey was stored with correct counter
-    let passkey = storage::get_passkey_by_credential_id(&db, "test_credential_id")
+    let passkey = storage::get_passkey_by_credential_id(db, "test_credential_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
@@ -79,7 +79,7 @@ async fn test_counter_updated_after_authentication() {
     let db = test_db.connection();
 
     // Create user and passkey
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
@@ -93,7 +93,7 @@ async fn test_counter_updated_after_authentication() {
     });
 
     storage::create_passkey(
-        &db,
+        db,
         "test_credential_id",
         &user.subject,
         &passkey_json.to_string(),
@@ -108,19 +108,19 @@ async fn test_counter_updated_after_authentication() {
     .expect("Failed to create passkey");
 
     // Verify initial counter
-    let passkey_before = storage::get_passkey_by_credential_id(&db, "test_credential_id")
+    let passkey_before = storage::get_passkey_by_credential_id(db, "test_credential_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
     assert_eq!(passkey_before.counter, 0);
 
     // Simulate authentication by updating counter (mimics what happens in web.rs:2183)
-    storage::update_passkey_counter(&db, "test_credential_id", 1)
+    storage::update_passkey_counter(db, "test_credential_id", 1)
         .await
         .expect("Failed to update counter");
 
     // Verify counter was incremented
-    let passkey_after = storage::get_passkey_by_credential_id(&db, "test_credential_id")
+    let passkey_after = storage::get_passkey_by_credential_id(db, "test_credential_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
@@ -141,7 +141,7 @@ async fn test_counter_increments_multiple_times() {
     let test_db = TestDb::new().await;
     let db = test_db.connection();
 
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
@@ -151,7 +151,7 @@ async fn test_counter_increments_multiple_times() {
     });
 
     storage::create_passkey(
-        &db,
+        db,
         "test_credential_id",
         &user.subject,
         &passkey_json.to_string(),
@@ -167,11 +167,11 @@ async fn test_counter_increments_multiple_times() {
 
     // Simulate multiple authentications
     for expected_counter in 1..=5 {
-        storage::update_passkey_counter(&db, "test_credential_id", expected_counter)
+        storage::update_passkey_counter(db, "test_credential_id", expected_counter)
             .await
             .expect("Failed to update counter");
 
-        let passkey = storage::get_passkey_by_credential_id(&db, "test_credential_id")
+        let passkey = storage::get_passkey_by_credential_id(db, "test_credential_id")
             .await
             .expect("Failed to get passkey")
             .expect("Passkey not found");
@@ -193,7 +193,7 @@ async fn test_cloud_synced_passkey_backup_flags() {
     let test_db = TestDb::new().await;
     let db = test_db.connection();
 
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
@@ -208,7 +208,7 @@ async fn test_cloud_synced_passkey_backup_flags() {
     });
 
     storage::create_passkey(
-        &db,
+        db,
         "cloud_credential_id",
         &user.subject,
         &passkey_json.to_string(),
@@ -222,7 +222,7 @@ async fn test_cloud_synced_passkey_backup_flags() {
     .await
     .expect("Failed to create passkey");
 
-    let passkey = storage::get_passkey_by_credential_id(&db, "cloud_credential_id")
+    let passkey = storage::get_passkey_by_credential_id(db, "cloud_credential_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
@@ -245,7 +245,7 @@ async fn test_hardware_bound_passkey_backup_flags() {
     let test_db = TestDb::new().await;
     let db = test_db.connection();
 
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
@@ -259,7 +259,7 @@ async fn test_hardware_bound_passkey_backup_flags() {
     });
 
     storage::create_passkey(
-        &db,
+        db,
         "hardware_credential_id",
         &user.subject,
         &passkey_json.to_string(),
@@ -273,7 +273,7 @@ async fn test_hardware_bound_passkey_backup_flags() {
     .await
     .expect("Failed to create passkey");
 
-    let passkey = storage::get_passkey_by_credential_id(&db, "hardware_credential_id")
+    let passkey = storage::get_passkey_by_credential_id(db, "hardware_credential_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
@@ -297,12 +297,12 @@ async fn test_amr_determination_hardware_key() {
     let test_db = TestDb::new().await;
     let db = test_db.connection();
 
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
     storage::create_passkey(
-        &db,
+        db,
         "hw_key_id",
         &user.subject,
         &serde_json::json!({"cred": {"counter": 0}}).to_string(),
@@ -316,7 +316,7 @@ async fn test_amr_determination_hardware_key() {
     .await
     .expect("Failed to create passkey");
 
-    let passkey = storage::get_passkey_by_credential_id(&db, "hw_key_id")
+    let passkey = storage::get_passkey_by_credential_id(db, "hw_key_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
@@ -339,12 +339,12 @@ async fn test_amr_determination_cloud_key() {
     let test_db = TestDb::new().await;
     let db = test_db.connection();
 
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
     storage::create_passkey(
-        &db,
+        db,
         "cloud_key_id",
         &user.subject,
         &serde_json::json!({"cred": {"counter": 0}}).to_string(),
@@ -358,7 +358,7 @@ async fn test_amr_determination_cloud_key() {
     .await
     .expect("Failed to create passkey");
 
-    let passkey = storage::get_passkey_by_credential_id(&db, "cloud_key_id")
+    let passkey = storage::get_passkey_by_credential_id(db, "cloud_key_id")
         .await
         .expect("Failed to get passkey")
         .expect("Passkey not found");
@@ -382,13 +382,13 @@ async fn test_multiple_passkeys_independent_counters() {
     let test_db = TestDb::new().await;
     let db = test_db.connection();
 
-    let user = storage::create_user(&db, "testuser", "password123", None)
+    let user = storage::create_user(db, "testuser", "password123", None)
         .await
         .expect("Failed to create user");
 
     // Create two passkeys for the same user
     storage::create_passkey(
-        &db,
+        db,
         "passkey1",
         &user.subject,
         &serde_json::json!({"cred": {"counter": 0}}).to_string(),
@@ -403,7 +403,7 @@ async fn test_multiple_passkeys_independent_counters() {
     .expect("Failed to create passkey 1");
 
     storage::create_passkey(
-        &db,
+        db,
         "passkey2",
         &user.subject,
         &serde_json::json!({"cred": {"counter": 0}}).to_string(),
@@ -418,20 +418,20 @@ async fn test_multiple_passkeys_independent_counters() {
     .expect("Failed to create passkey 2");
 
     // Update counters independently
-    storage::update_passkey_counter(&db, "passkey1", 5)
+    storage::update_passkey_counter(db, "passkey1", 5)
         .await
         .expect("Failed to update counter 1");
-    storage::update_passkey_counter(&db, "passkey2", 10)
+    storage::update_passkey_counter(db, "passkey2", 10)
         .await
         .expect("Failed to update counter 2");
 
     // Verify independent tracking
-    let pk1 = storage::get_passkey_by_credential_id(&db, "passkey1")
+    let pk1 = storage::get_passkey_by_credential_id(db, "passkey1")
         .await
         .expect("Failed to get passkey 1")
         .expect("Passkey 1 not found");
 
-    let pk2 = storage::get_passkey_by_credential_id(&db, "passkey2")
+    let pk2 = storage::get_passkey_by_credential_id(db, "passkey2")
         .await
         .expect("Failed to get passkey 2")
         .expect("Passkey 2 not found");

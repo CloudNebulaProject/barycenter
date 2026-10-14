@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct JwksManager {
-    cfg: Keys,
     public_jwks_value: Arc<Value>,
     private_jwk: Arc<Jwk>,
 }
@@ -42,7 +41,7 @@ impl JwksManager {
         // token carries `kid`, so omitting it from the advertised JWK makes strict OIDC
         // clients reject an otherwise valid signature with "No matching key found".
         if private_jwk.key_id().is_none() {
-            private_jwk.set_key_id(&cfg.key_id.clone().unwrap_or_else(random_kid));
+            private_jwk.set_key_id(cfg.key_id.clone().unwrap_or_else(random_kid));
         }
         if private_jwk.algorithm().is_none() {
             private_jwk.set_algorithm(cfg.alg.as_str());
@@ -72,7 +71,6 @@ impl JwksManager {
         )?;
 
         Ok(Self {
-            cfg,
             public_jwks_value: Arc::new(public_jwks_value),
             private_jwk: Arc::new(private_jwk),
         })
@@ -108,7 +106,7 @@ fn random_kid() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+
     use tempfile::TempDir;
 
     /// Helper to create test Keys config

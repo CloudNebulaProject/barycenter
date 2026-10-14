@@ -120,6 +120,9 @@ impl TestServer {
             }
         }
 
+        // Reap the child before panicking so a failed start leaves no zombie server.
+        let _ = process.kill();
+        let _ = process.wait();
         panic!("Server failed to start within timeout");
     }
 
