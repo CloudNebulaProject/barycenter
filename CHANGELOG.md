@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-root user execution in containers
 - Extensive systemd security hardening
 
+## [0.2.0-beta.23] - 2026-10-14
+
+### Fixed
+- Version the Continue script URL so returning browsers load the duplicate-callback fix instead of a cached pre-fix script.
+- Assert the versioned URL in the continuation-page regression test.
+
+### Deployment
+- Supersedes beta.22, which failed warm-browser rollout acceptance and was rolled back before upgrading the second provider. No schema or configuration changes.
+
 ## [0.2.0-beta.22] - 2026-10-14
 
 ### Fixed
