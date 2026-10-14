@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-root user execution in containers
 - Extensive systemd security hardening
 
+## [0.2.0-beta.22] - 2026-10-14
+
+### Fixed
+- Disable the Continue link before automatic navigation so it cannot start a duplicate federation callback (#13).
+- Explain already-used, expired and mismatched federation callbacks with actionable messages and diagnostic logs (#13).
+- Bound peer connection and token-exchange timeouts so failures are reported before gateway timeouts (#13).
+- Make strict Clippy checks pass on Rust 1.99 and ignore Python cache artifacts (#14).
+
+### Deployment
+- No database schema migrations since beta.18; existing PostgreSQL databases, signing keys and issuer URLs remain compatible.
+- Invitation onboarding improvements from beta.20 and beta.21 are included when upgrading beta.18. The optional `server.onboarding_app_url` defaults to unset.
+
 ## [0.1.0] - 2025-11-29
 
 Initial development version.
