@@ -30,3 +30,7 @@
 # Environment and config (optional - uncomment if you want to ignore local configs)
 # config.toml
 # .env
+
+# Python cache artifacts
+__pycache__/
+*.pyc

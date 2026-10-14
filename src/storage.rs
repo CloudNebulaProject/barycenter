@@ -236,6 +236,8 @@ pub async fn get_client(
     }
 }
 
+// One parameter per persisted column; callers are the authorize endpoint and tests.
+#[allow(clippy::too_many_arguments)]
 pub async fn issue_auth_code(
     db: &DatabaseConnection,
     client_id: &str,
@@ -877,6 +879,8 @@ pub async fn get_user_by_subject(
 
 // Passkey management functions
 
+// One parameter per persisted column.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_passkey(
     db: &DatabaseConnection,
     credential_id: &str,
@@ -1643,7 +1647,7 @@ mod tests {
         let db = test_db.connection();
 
         let client = create_client(
-            &db,
+            db,
             NewClient {
                 client_name: Some("Test Client".to_string()),
                 redirect_uris: vec!["http://localhost:3000/callback".to_string()],
@@ -1663,7 +1667,7 @@ mod tests {
         let db = test_db.connection();
 
         let created = create_client(
-            &db,
+            db,
             NewClient {
                 client_name: Some("Test Client".to_string()),
                 redirect_uris: vec!["http://localhost:3000/callback".to_string()],
@@ -1672,7 +1676,7 @@ mod tests {
         .await
         .expect("Failed to create client");
 
-        let retrieved = get_client(&db, &created.client_id)
+        let retrieved = get_client(db, &created.client_id)
             .await
             .expect("Failed to get client")
             .expect("Client not found");
@@ -1686,7 +1690,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let result = get_client(&db, "nonexistent_client_id")
+        let result = get_client(db, "nonexistent_client_id")
             .await
             .expect("Query failed");
 
@@ -1704,7 +1708,7 @@ mod tests {
         ];
 
         let client = create_client(
-            &db,
+            db,
             NewClient {
                 client_name: Some("Multi-URI Client".to_string()),
                 redirect_uris: uris.clone(),
@@ -1713,7 +1717,7 @@ mod tests {
         .await
         .expect("Failed to create client");
 
-        let retrieved = get_client(&db, &client.client_id)
+        let retrieved = get_client(db, &client.client_id)
             .await
             .expect("Failed to get client")
             .expect("Client not found");
@@ -1733,7 +1737,7 @@ mod tests {
         let db = test_db.connection();
 
         let code = issue_auth_code(
-            &db,
+            db,
             "test_client_id",
             "http://localhost:3000/callback",
             "openid profile",
@@ -1757,7 +1761,7 @@ mod tests {
         let db = test_db.connection();
 
         let code = issue_auth_code(
-            &db,
+            db,
             "test_client_id",
             "http://localhost:3000/callback",
             "openid profile",
@@ -1771,7 +1775,7 @@ mod tests {
         .await
         .expect("Failed to issue auth code");
 
-        let auth_code = consume_auth_code(&db, &code.code)
+        let auth_code = consume_auth_code(db, &code.code)
             .await
             .expect("Failed to consume auth code")
             .expect("Auth code not found");
@@ -1787,7 +1791,7 @@ mod tests {
         let db = test_db.connection();
 
         let code = issue_auth_code(
-            &db,
+            db,
             "test_client_id",
             "http://localhost:3000/callback",
             "openid profile",
@@ -1802,13 +1806,13 @@ mod tests {
         .expect("Failed to issue auth code");
 
         // First consumption succeeds
-        consume_auth_code(&db, &code.code)
+        consume_auth_code(db, &code.code)
             .await
             .expect("Failed to consume auth code")
             .expect("Auth code not found");
 
         // Second consumption returns None
-        let result = consume_auth_code(&db, &code.code)
+        let result = consume_auth_code(db, &code.code)
             .await
             .expect("Query failed");
 
@@ -1821,7 +1825,7 @@ mod tests {
         let db = test_db.connection();
 
         let code = issue_auth_code(
-            &db,
+            db,
             "test_client_id",
             "http://localhost:3000/callback",
             "openid profile",
@@ -1836,8 +1840,8 @@ mod tests {
         .expect("Failed to issue auth code");
 
         // Manually expire the code by setting expires_at to past
-        use entities::auth_code::{ActiveModel, Column, Entity};
-        use sea_orm::ActiveValue::Set;
+        use entities::auth_code::{Column, Entity};
+
         use sea_orm::EntityTrait;
 
         let past_timestamp = chrono::Utc::now().timestamp() - 600; // 10 minutes ago
@@ -1853,7 +1857,7 @@ mod tests {
             .expect("Failed to update expiry");
 
         // Consumption should return None for expired code
-        let result = consume_auth_code(&db, &code.code)
+        let result = consume_auth_code(db, &code.code)
             .await
             .expect("Query failed");
 
@@ -1866,7 +1870,7 @@ mod tests {
         let db = test_db.connection();
 
         let code = issue_auth_code(
-            &db,
+            db,
             "test_client_id",
             "http://localhost:3000/callback",
             "openid profile",
@@ -1880,7 +1884,7 @@ mod tests {
         .await
         .expect("Failed to issue auth code");
 
-        let auth_code = consume_auth_code(&db, &code.code)
+        let auth_code = consume_auth_code(db, &code.code)
             .await
             .expect("Failed to consume auth code")
             .expect("Auth code not found");
@@ -1899,7 +1903,7 @@ mod tests {
         let db = test_db.connection();
 
         let token = issue_access_token(
-            &db,
+            db,
             "test_client_id",
             "test_subject",
             "openid profile",
@@ -1917,7 +1921,7 @@ mod tests {
         let db = test_db.connection();
 
         let token = issue_access_token(
-            &db,
+            db,
             "test_client_id",
             "test_subject",
             "openid profile",
@@ -1926,7 +1930,7 @@ mod tests {
         .await
         .expect("Failed to issue access token");
 
-        let access_token = get_access_token(&db, &token.token)
+        let access_token = get_access_token(db, &token.token)
             .await
             .expect("Failed to get access token")
             .expect("Access token not found");
@@ -1942,7 +1946,7 @@ mod tests {
         let db = test_db.connection();
 
         let token = issue_access_token(
-            &db,
+            db,
             "test_client_id",
             "test_subject",
             "openid profile",
@@ -1968,7 +1972,7 @@ mod tests {
             .expect("Failed to update expiry");
 
         // Should return None for expired token
-        let result = get_access_token(&db, &token.token)
+        let result = get_access_token(db, &token.token)
             .await
             .expect("Query failed");
 
@@ -1981,7 +1985,7 @@ mod tests {
         let db = test_db.connection();
 
         let token = issue_access_token(
-            &db,
+            db,
             "test_client_id",
             "test_subject",
             "openid profile",
@@ -2002,7 +2006,7 @@ mod tests {
             .expect("Failed to revoke token");
 
         // Should return None for revoked token
-        let result = get_access_token(&db, &token.token)
+        let result = get_access_token(db, &token.token)
             .await
             .expect("Query failed");
 
@@ -2016,7 +2020,7 @@ mod tests {
 
         // Create initial refresh token
         let token1 = issue_refresh_token(
-            &db,
+            db,
             "test_subject",
             "test_client_id",
             "openid profile",
@@ -2028,7 +2032,7 @@ mod tests {
 
         // Rotate to new token
         let token2 = issue_refresh_token(
-            &db,
+            db,
             "test_client_id",
             "test_subject",
             "openid profile",
@@ -2039,7 +2043,7 @@ mod tests {
         .expect("Failed to rotate refresh token");
 
         // Verify parent chain
-        let rt2 = get_refresh_token(&db, &token2.token)
+        let rt2 = get_refresh_token(db, &token2.token)
             .await
             .expect("Failed to get token")
             .expect("Token not found");
@@ -2053,7 +2057,7 @@ mod tests {
         let db = test_db.connection();
 
         let token = issue_refresh_token(
-            &db,
+            db,
             "test_subject",
             "test_client_id",
             "openid profile",
@@ -2063,12 +2067,12 @@ mod tests {
         .await
         .expect("Failed to issue refresh token");
 
-        revoke_refresh_token(&db, &token.token)
+        revoke_refresh_token(db, &token.token)
             .await
             .expect("Failed to revoke token");
 
         // Should return None for revoked token
-        let result = get_refresh_token(&db, &token.token)
+        let result = get_refresh_token(db, &token.token)
             .await
             .expect("Query failed");
 
@@ -2084,7 +2088,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
@@ -2100,11 +2104,11 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let created = create_user(&db, "testuser", "password123", None)
+        let created = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
-        let retrieved = get_user_by_username(&db, "testuser")
+        let retrieved = get_user_by_username(db, "testuser")
             .await
             .expect("Failed to get user")
             .expect("User not found");
@@ -2118,11 +2122,11 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        create_user(&db, "testuser", "password123", None)
+        create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
-        let subject = verify_user_password(&db, "testuser", "password123")
+        let subject = verify_user_password(db, "testuser", "password123")
             .await
             .expect("Failed to verify password")
             .expect("Verification failed");
@@ -2136,11 +2140,11 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        create_user(&db, "testuser", "password123", None)
+        create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
-        let result = verify_user_password(&db, "testuser", "wrongpassword")
+        let result = verify_user_password(db, "testuser", "wrongpassword")
             .await
             .expect("Query failed");
 
@@ -2152,17 +2156,17 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         // Disable the user
-        update_user(&db, &user.subject, false, None, None)
+        update_user(db, &user.subject, false, None, None)
             .await
             .expect("Failed to disable user");
 
         // Verification should fail for disabled user
-        let result = verify_user_password(&db, "testuser", "password123")
+        let result = verify_user_password(db, "testuser", "password123")
             .await
             .expect("Query failed");
 
@@ -2174,12 +2178,12 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         update_user(
-            &db,
+            db,
             &user.subject,
             false,
             Some("test@example.com".to_string()),
@@ -2188,7 +2192,7 @@ mod tests {
         .await
         .expect("Failed to update user");
 
-        let updated = get_user_by_subject(&db, &user.subject)
+        let updated = get_user_by_subject(db, &user.subject)
             .await
             .expect("Failed to get user")
             .expect("User not found");
@@ -2203,12 +2207,12 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         update_user(
-            &db,
+            db,
             &user.subject,
             true,
             Some("new@example.com".to_string()),
@@ -2217,7 +2221,7 @@ mod tests {
         .await
         .expect("Failed to update email");
 
-        let updated = get_user_by_subject(&db, &user.subject)
+        let updated = get_user_by_subject(db, &user.subject)
             .await
             .expect("Failed to get user")
             .expect("User not found");
@@ -2234,12 +2238,12 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         let auth_time = chrono::Utc::now().timestamp();
-        let session = create_session(&db, &user.subject, auth_time, 3600, None, None)
+        let session = create_session(db, &user.subject, auth_time, 3600, None, None)
             .await
             .expect("Failed to create session");
 
@@ -2252,16 +2256,16 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         let auth_time = chrono::Utc::now().timestamp();
-        let created = create_session(&db, &user.subject, auth_time, 3600, None, None)
+        let created = create_session(db, &user.subject, auth_time, 3600, None, None)
             .await
             .expect("Failed to create session");
 
-        let retrieved = get_session(&db, &created.session_id)
+        let retrieved = get_session(db, &created.session_id)
             .await
             .expect("Failed to get session")
             .expect("Session not found");
@@ -2275,17 +2279,17 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         let auth_time = chrono::Utc::now().timestamp() - 7200; // 2 hours ago
-        let session = create_session(&db, &user.subject, auth_time, 3600, None, None) // 1 hour TTL
+        let session = create_session(db, &user.subject, auth_time, 3600, None, None) // 1 hour TTL
             .await
             .expect("Failed to create session");
 
         // Should return None for expired session
-        let result = get_session(&db, &session.session_id)
+        let result = get_session(db, &session.session_id)
             .await
             .expect("Query failed");
 
@@ -2297,20 +2301,20 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         let auth_time = chrono::Utc::now().timestamp();
-        let session = create_session(&db, &user.subject, auth_time, 3600, None, None)
+        let session = create_session(db, &user.subject, auth_time, 3600, None, None)
             .await
             .expect("Failed to create session");
 
-        delete_session(&db, &session.session_id)
+        delete_session(db, &session.session_id)
             .await
             .expect("Failed to delete session");
 
-        let result = get_session(&db, &session.session_id)
+        let result = get_session(db, &session.session_id)
             .await
             .expect("Query failed");
 
@@ -2322,17 +2326,17 @@ mod tests {
         let test_db = TestDb::new().await;
         let db = test_db.connection();
 
-        let user = create_user(&db, "testuser", "password123", None)
+        let user = create_user(db, "testuser", "password123", None)
             .await
             .expect("Failed to create user");
 
         // Create an expired session
         let past_auth_time = chrono::Utc::now().timestamp() - 7200;
-        create_session(&db, &user.subject, past_auth_time, 3600, None, None)
+        create_session(db, &user.subject, past_auth_time, 3600, None, None)
             .await
             .expect("Failed to create session");
 
-        let deleted_count = cleanup_expired_sessions(&db)
+        let deleted_count = cleanup_expired_sessions(db)
             .await
             .expect("Failed to cleanup sessions");
 
@@ -2349,11 +2353,11 @@ mod tests {
         let db = test_db.connection();
 
         let value = serde_json::json!({"key": "value"});
-        set_property(&db, "owner1", "test_key", &value)
+        set_property(db, "owner1", "test_key", &value)
             .await
             .expect("Failed to set property");
 
-        let retrieved = get_property(&db, "owner1", "test_key")
+        let retrieved = get_property(db, "owner1", "test_key")
             .await
             .expect("Failed to get property")
             .expect("Property not found");
@@ -2367,16 +2371,16 @@ mod tests {
         let db = test_db.connection();
 
         let value1 = serde_json::json!({"version": 1});
-        set_property(&db, "owner1", "test_key", &value1)
+        set_property(db, "owner1", "test_key", &value1)
             .await
             .expect("Failed to set property");
 
         let value2 = serde_json::json!({"version": 2});
-        set_property(&db, "owner1", "test_key", &value2)
+        set_property(db, "owner1", "test_key", &value2)
             .await
             .expect("Failed to update property");
 
-        let retrieved = get_property(&db, "owner1", "test_key")
+        let retrieved = get_property(db, "owner1", "test_key")
             .await
             .expect("Failed to get property")
             .expect("Property not found");
@@ -2398,11 +2402,11 @@ mod tests {
             }
         });
 
-        set_property(&db, "owner1", "complex", &value)
+        set_property(db, "owner1", "complex", &value)
             .await
             .expect("Failed to set property");
 
-        let retrieved = get_property(&db, "owner1", "complex")
+        let retrieved = get_property(db, "owner1", "complex")
             .await
             .expect("Failed to get property")
             .expect("Property not found");

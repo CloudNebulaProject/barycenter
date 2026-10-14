@@ -583,7 +583,7 @@ mod tests {
             .expect("Failed to start job execution");
 
         complete_job_execution(
-            &db,
+            db,
             execution_id,
             false,
             Some("Test error message".to_string()),

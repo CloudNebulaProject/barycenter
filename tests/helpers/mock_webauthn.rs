@@ -53,16 +53,14 @@ impl MockWebAuthnCredential {
 /// Note: For full WebAuthn testing, you should use webauthn-rs's test utilities
 /// or mock the WebAuthn responses at the HTTP level.
 fn create_test_passkey(
-    user_id: Uuid,
-    username: &str,
-    credential_id: &[u8],
-    backup_state: bool,
+    _user_id: Uuid,
+    _username: &str,
+    _credential_id: &[u8],
+    _backup_state: bool,
 ) -> Passkey {
     // Create a test passkey using webauthn-rs's test utilities
     // This is a simplified version - in production tests you'd want
     // to use the full webauthn-rs test framework or mock HTTP responses
-
-    use webauthn_rs::prelude::*;
 
     // For now, we'll use a placeholder
     // In actual implementation, you'd use webauthn-rs test utilities

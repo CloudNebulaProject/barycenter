@@ -45,9 +45,6 @@ const PROFILE_CLAIMS: &[&str] = &[
     "updated_at",
 ];
 
-/// Standard OIDC email claims (returned when `email` scope is granted).
-const EMAIL_CLAIMS: &[&str] = &["email", "email_verified"];
-
 fn has_scope(scope_str: &str, target: &str) -> bool {
     scope_str.split_whitespace().any(|s| s == target)
 }
@@ -146,7 +143,7 @@ async fn security_headers(
         if let (Some(client_id), Some(redirect_uri)) =
             (params.get("client_id"), params.get("redirect_uri"))
         {
-            if let Ok(Some(client)) = storage::get_client(&db, client_id).await {
+            if let Ok(Some(client)) = storage::get_client(db, client_id).await {
                 if client
                     .redirect_uris
                     .iter()
@@ -1025,12 +1022,8 @@ struct ConsentQuery {
     nonce: Option<String>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
-    prompt: Option<String>,
-    display: Option<String>,
-    ui_locales: Option<String>,
-    claims_locales: Option<String>,
-    max_age: Option<String>,
-    acr_values: Option<String>,
+    // Other authorization parameters (prompt, display, max_age, …) are accepted
+    // and ignored here; the consent page only replays what it renders.
 }
 
 #[derive(Debug, Deserialize)]
@@ -1223,6 +1216,7 @@ async fn consent_submit(
 }
 
 // Helper function to build ID token
+#[allow(clippy::too_many_arguments)]
 async fn build_id_token(
     state: &AppState,
     client_id: &str,
@@ -1365,7 +1359,7 @@ async fn handle_authorization_code_grant(
     // Client authentication: client_secret_basic preferred, then client_secret_post
     let (client_id, client_secret) = match authenticate_client(&headers, &req) {
         Ok(pair) => pair,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     let client = match storage::get_client(&state.db, &client_id).await {
@@ -1546,7 +1540,7 @@ async fn handle_authorization_code_grant(
 #[derive(Debug, Deserialize)]
 struct TokenRevokeRequest {
     token: String,
-    token_type_hint: Option<String>,
+    // token_type_hint is accepted and ignored (RFC 7009 §2.1); both token kinds are tried.
     client_id: Option<String>,
     client_secret: Option<String>,
 }
@@ -1638,7 +1632,7 @@ async fn handle_refresh_token_grant(
     // Client authentication
     let (client_id, client_secret) = match authenticate_client(&headers, &req) {
         Ok(pair) => pair,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     let client = match storage::get_client(&state.db, &client_id).await {
@@ -2031,7 +2025,7 @@ async fn handle_device_code_grant(
 fn authenticate_client(
     headers: &HeaderMap,
     req: &TokenRequest,
-) -> Result<(String, String), Response> {
+) -> Result<(String, String), Box<Response>> {
     // Try client_secret_basic first (Authorization header)
     let mut basic_client: Option<(String, String)> = None;
     if let Some(auth_val) = headers
@@ -2055,14 +2049,14 @@ fn authenticate_client(
         // Try client_secret_post (form body)
         match (req.client_id.clone(), req.client_secret.clone()) {
             (Some(id), Some(sec)) => Ok((id, sec)),
-            _ => Err(json_with_headers(
+            _ => Err(Box::new(json_with_headers(
                 StatusCode::UNAUTHORIZED,
                 json!({"error":"invalid_client","error_description":"missing client authentication"}),
                 &[(
                     "www-authenticate",
                     "Basic realm=\"token\", error=\"invalid_client\"".to_string(),
                 )],
-            )),
+            ))),
         }
     }
 }
@@ -3063,6 +3057,8 @@ use webauthn_rs::prelude::*;
 
 #[derive(Debug, Deserialize)]
 struct PasskeyRegisterStartRequest {
+    // Accepted for API compatibility; the friendly name is bound at /register/finish.
+    #[allow(dead_code)]
     name: Option<String>,
 }
 
@@ -3099,12 +3095,6 @@ struct PasskeyAuthStartResponse {
 struct PasskeyAuthFinishRequest {
     credential: PublicKeyCredential,
     return_to: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct PasskeyAuthFinishResponse {
-    success: bool,
-    redirect_url: Option<String>,
 }
 
 // Request/Response types for passkey management
@@ -4382,14 +4372,9 @@ async fn try_federated_redirect(
                 let wf_client = WebFingerClient::new();
                 if let Ok(issuer) = wf_client.discover_issuer(login_hint).await {
                     if let Ok(peers) = fed_storage::list_trusted_peers(&state.db).await {
-                        if let Some(p) = peers
+                        peers
                             .into_iter()
-                            .find(|p| p.issuer_url == issuer && p.status == "active")
-                        {
-                            p
-                        } else {
-                            return None;
-                        }
+                            .find(|p| p.issuer_url == issuer && p.status == "active")?
                     } else {
                         return None;
                     }
