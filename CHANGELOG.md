@@ -45,7 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Keep generated Seaography entity reads unavailable; expose client trust only through secret-free queries in the hand-written jobs schema.
 - Honor `prompt=consent` even when the global test consent bypass is set.
-- Include the sign-in username in Admin CLI emails and on invitation password setup and activation confirmation pages.
 
 ### Deployment
 - Adds migration `m20261023_000001_add_client_trusted` (additive, defaults to untrusted). Mark first-party clients trusted via the admin API after rollout.
@@ -70,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deployment
 - No database schema migrations since beta.18; existing PostgreSQL databases, signing keys and issuer URLs remain compatible.
 - Invitation onboarding improvements from beta.20 and beta.21 are included when upgrading beta.18. The optional `server.onboarding_app_url` defaults to unset.
+
+## [0.2.0-beta.18] - 2026-10-05
+
+### Fixed
+- Include the sign-in username in Admin CLI emails and on invitation password setup and activation confirmation pages.
 
 ## [0.1.0] - 2025-11-29
 
