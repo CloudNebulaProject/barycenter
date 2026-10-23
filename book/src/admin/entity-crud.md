@@ -87,14 +87,13 @@ Each entity exposes `findMany` and `findOne` queries, as well as `createOne`, `u
 
 ```graphql
 {
-  client {
-    findMany {
-      nodes {
-        clientId
-        clientName
-        redirectUris
-        createdAt
-      }
+  clients {
+    nodes {
+      clientId
+      clientName
+      redirectUris
+      trusted
+      createdAt
     }
   }
 }

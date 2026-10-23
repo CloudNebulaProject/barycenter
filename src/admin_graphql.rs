@@ -35,7 +35,7 @@ pub fn build_seaography_schema(db: DatabaseConnection) -> DynamicSchema {
     builder.register_entity::<entities::job_execution::Entity>(vec![]);
 
     // Build and return the schema
-    builder.schema_builder().finish().unwrap()
+    builder.schema_builder().data(db).finish().unwrap()
 }
 
 /// Build custom job management GraphQL schema

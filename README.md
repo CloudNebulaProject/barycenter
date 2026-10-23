@@ -144,7 +144,7 @@ This is an early-stage implementation. See `docs/next-iteration-plan.md` for pla
 - Token endpoint with client_secret_basic and client_secret_post
 - User authentication with sessions (password + passkey/WebAuthn)
 - Two-factor authentication (admin-enforced, context-based)
-- Consent flow with database persistence
+- Consent flow with database persistence and admin-controlled trust for first-party clients
 - Refresh token grant with rotation
 - Token revocation (RFC 7009) and introspection (RFC 7662)
 - Device Authorization Grant (RFC 8628)
@@ -181,6 +181,30 @@ helm install barycenter ./deploy/helm/barycenter \
   --namespace barycenter \
   --create-namespace
 ```
+
+## First-party client consent
+
+Clients default to untrusted. Administrators can let a first-party client such as
+Sokar skip consent after login using the admin service's `POST /admin/jobs`:
+
+```graphql
+mutation {
+  setClientTrusted(clientId: "SOKAR_CLIENT_ID", trusted: true) {
+    clientId
+    trusted
+  }
+}
+```
+
+Use `trusted: false` to remove trust, or run
+`barycenter client trust CLIENT_ID [--untrust]` against the configured database.
+Public `/connect/register` requests cannot grant trust. Login and 2FA still apply;
+`prompt=consent` forces the screen, and `prompt=none` retains the existing
+prior-grant requirement. Skipping consent records an implicit grant. Removing
+trust preserves existing grants; revoke those too to require fresh consent.
+See [consent behavior](book/src/authentication/consent.md) and the
+[admin API](book/src/admin/graphql-api.md#client-trust). Keep the global
+`BARYCENTER_SKIP_CONSENT` bypass limited to development and tests.
 
 ## Email onboarding and macOS admin CLI
 

@@ -8,6 +8,8 @@ use std::time::Duration;
 struct TestServer {
     process: Child,
     base_url: String,
+    admin_url: String,
+    database_url: String,
     _temp_dir: tempfile::TempDir,
 }
 
@@ -65,7 +67,7 @@ impl TestServer {
             .env("RUST_LOG", "error")
             .env("BARYCENTER__SERVER__PORT", port.to_string())
             .env("BARYCENTER__SERVER__ADMIN_PORT", admin_port.to_string())
-            .env("BARYCENTER__DATABASE__URL", database_url)
+            .env("BARYCENTER__DATABASE__URL", &database_url)
             .env(
                 "BARYCENTER__KEYS__JWKS_PATH",
                 temp_dir.path().join("jwks.json"),
@@ -102,6 +104,8 @@ impl TestServer {
                 return Self {
                     process,
                     base_url,
+                    admin_url: format!("http://localhost:{}", admin_port),
+                    database_url,
                     _temp_dir: temp_dir,
                 };
             }
@@ -296,6 +300,226 @@ fn login_rejects_non_local_return_targets() {
             Some("/")
         );
     }
+}
+
+/// Exercise the public/admin boundary and the full consent lifecycle on one client.
+#[test]
+fn trusted_client_consent_and_admin_management() {
+    let server = TestServer::start_with_skip_consent(false);
+    let http = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let registration = http
+        .post(format!("{}/connect/register", server.base_url()))
+        .json(&serde_json::json!({
+            "client_name": "First-party test",
+            "redirect_uris": ["http://localhost:3000/callback"],
+            "trusted": true
+        }))
+        .send()
+        .unwrap();
+    assert_eq!(registration.status(), reqwest::StatusCode::CREATED);
+    let registration: serde_json::Value = registration.json().unwrap();
+    let client_id = registration["client_id"].as_str().unwrap();
+
+    let mutation = |id: &str, trusted: bool| -> serde_json::Value {
+        http.post(format!("{}/admin/jobs", server.admin_url))
+            .json(&serde_json::json!({
+                "query": "mutation($id: String!, $trusted: Boolean!) { setClientTrusted(clientId: $id, trusted: $trusted) { clientId clientName redirectUris trusted } }",
+                "variables": {"id": id, "trusted": trusted}
+            })).send().unwrap().json().unwrap()
+    };
+    let listing: serde_json::Value = http
+        .post(format!("{}/admin/graphql", server.admin_url))
+        .json(&serde_json::json!({"query": "{ clients { nodes { clientId trusted } } }"}))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(listing.get("errors").is_none(), "{listing}");
+    assert_eq!(listing["data"]["clients"]["nodes"][0]["trusted"], false);
+
+    let (authenticated, _) = login_and_get_client(server.base_url(), "trusted-user", "testpass123");
+    let mut authorize = url::Url::parse(&format!("{}/authorize", server.base_url())).unwrap();
+    authorize.query_pairs_mut().extend_pairs([
+        ("client_id", client_id),
+        ("redirect_uri", "http://localhost:3000/callback"),
+        ("response_type", "code"),
+        ("scope", "openid profile"),
+        ("state", "trusted_state"),
+        ("code_challenge", "test_challenge"),
+        ("code_challenge_method", "S256"),
+    ]);
+    let location = |http: &reqwest::blocking::Client, prompt: Option<&str>| -> String {
+        let mut url = authorize.clone();
+        if let Some(prompt) = prompt {
+            url.query_pairs_mut().append_pair("prompt", prompt);
+        }
+        let response = http.get(url).send().unwrap();
+        assert!(response.status().is_redirection());
+        response.headers()["location"].to_str().unwrap().to_owned()
+    };
+    assert!(location(&authenticated, None).starts_with("/consent?"));
+    assert!(location(&authenticated, Some("none")).contains("error=consent_required"));
+
+    let trusted = mutation(client_id, true);
+    assert!(trusted.get("errors").is_none(), "{trusted}");
+    assert_eq!(trusted["data"]["setClientTrusted"]["trusted"], true);
+    assert_eq!(trusted["data"]["setClientTrusted"]["clientId"], client_id);
+    // Trust does not change login, forced reauthentication, or silent consent requirements.
+    assert!(location(&http, None).starts_with("/login?"));
+    assert!(location(&http, Some("none")).contains("error=login_required"));
+    assert!(location(&authenticated, Some("login")).starts_with("/login?"));
+    let mut mfa = authorize.clone();
+    mfa.query_pairs_mut().append_pair("max_age", "299");
+    let mfa_response = authenticated.get(mfa).send().unwrap();
+    assert!(mfa_response.headers()["location"]
+        .to_str()
+        .unwrap()
+        .starts_with("/login/2fa?"));
+    assert!(location(&authenticated, Some("none")).contains("error=consent_required"));
+    assert!(location(&authenticated, Some("consent")).starts_with("/consent?"));
+    let redirect = url::Url::parse(&location(&authenticated, None)).unwrap();
+    assert_eq!(
+        redirect.origin().ascii_serialization(),
+        "http://localhost:3000"
+    );
+    assert!(redirect
+        .query_pairs()
+        .any(|(key, value)| key == "code" && !value.is_empty()));
+    assert!(redirect
+        .query_pairs()
+        .any(|(key, value)| key == "state" && value == "trusted_state"));
+    assert!(location(&authenticated, Some("none")).contains("code="));
+    assert!(location(&authenticated, Some("consent")).starts_with("/consent?"));
+    assert!(location(&authenticated, None).contains("code="));
+
+    // The implicit grant is stored once and can be revoked using the existing API.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let db = sea_orm::Database::connect(&server.database_url)
+            .await
+            .unwrap();
+        let user = barycenter::storage::get_user_by_username(&db, "trusted-user")
+            .await
+            .unwrap()
+            .unwrap();
+        let grants = barycenter::storage::get_consents_by_subject(&db, &user.subject)
+            .await
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].scope, "openid profile");
+        barycenter::storage::revoke_consents_for_client(&db, client_id, &user.subject)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+    });
+    assert!(location(&authenticated, Some("none")).contains("error=consent_required"));
+    assert!(location(&authenticated, None).contains("code="));
+    let untrusted = mutation(client_id, false);
+    assert!(untrusted.get("errors").is_none(), "{untrusted}");
+    assert_eq!(untrusted["data"]["setClientTrusted"]["trusted"], false);
+    // The recorded grant survives removing trust, but does not cover new scopes.
+    assert!(location(&authenticated, None).contains("code="));
+    let mut expanded = authorize.clone();
+    expanded
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(authorize.query_pairs().map(|(key, value)| {
+            let value = if key == "scope" {
+                "openid profile email".into()
+            } else {
+                value
+            };
+            (key, value)
+        }));
+    let response = authenticated.get(expanded).send().unwrap();
+    assert!(response.headers()["location"]
+        .to_str()
+        .unwrap()
+        .starts_with("/consent?"));
+
+    let missing = mutation("missing-client", true);
+    assert_eq!(
+        missing["errors"][0]["extensions"]["code"],
+        "barycenter::client::not_found"
+    );
+    assert!(missing["errors"][0]["extensions"]["help"]
+        .as_str()
+        .unwrap()
+        .contains("client ID"));
+    // The mutation is not reachable on the public OIDC service.
+    let public = http.post(format!("{}/admin/jobs", server.base_url()))
+        .json(&serde_json::json!({"query": "mutation { setClientTrusted(clientId: \"missing-client\", trusted: true) { trusted } }"}))
+        .send().unwrap();
+    assert_eq!(public.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn client_trust_cli_updates_flag_and_reports_missing_clients() {
+    let server = TestServer::start();
+    let (client_id, _, _) = register_client(server.base_url());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for untrust in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_barycenter"));
+        command
+            .env("BARYCENTER__DATABASE__URL", &server.database_url)
+            .args(["client", "trust", &client_id]);
+        if untrust {
+            command.arg("--untrust");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        runtime.block_on(async {
+            let db = sea_orm::Database::connect(&server.database_url)
+                .await
+                .unwrap();
+            let client = barycenter::storage::get_client(&db, &client_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(client.trusted, !untrust);
+            db.close().await.unwrap();
+        });
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_barycenter"))
+        .env("BARYCENTER__DATABASE__URL", &server.database_url)
+        .args(["client", "trust", "missing-client"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("barycenter::client::not_found"), "{stderr}");
+    assert!(stderr.contains("admin client listing"), "{stderr}");
+}
+
+#[test]
+fn prompt_consent_overrides_global_skip() {
+    let server = TestServer::start();
+    let (client_id, _, redirect_uri) = register_client(server.base_url());
+    let (http, _) = login_and_get_client(server.base_url(), "force-consent-user", "testpass123");
+    let response = http
+        .get(format!("{}/authorize", server.base_url()))
+        .query(&[
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("prompt", "consent"),
+            ("code_challenge", "test_challenge"),
+            ("code_challenge_method", "S256"),
+        ])
+        .send()
+        .unwrap();
+    assert!(response.headers()["location"]
+        .to_str()
+        .unwrap()
+        .starts_with("/consent?"));
 }
 
 #[test]

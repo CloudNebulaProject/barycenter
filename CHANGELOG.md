@@ -8,9 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Supply the database connection to generated admin entity queries so registered client trust can be listed.
+- Honor `prompt=consent` even when the global test consent bypass is set.
 - Include the sign-in username in Admin CLI emails and on invitation password setup and activation confirmation pages.
 
 ### Added
+- Per-client, admin-controlled first-party trust to skip interactive consent after authentication, with implicit grants and preserved `prompt=none` checks.
+- Admin `setClientTrusted(clientId: String!, trusted: Boolean!): ClientGql!` mutation, client query trust metadata, and `barycenter client trust CLIENT_ID [--untrust]`.
+- SQLite/PostgreSQL migration `m20261023_000001_add_client_trusted`, defaulting all clients to untrusted; public registration cannot set trust.
 - Initial release of Barycenter OpenID Connect Identity Provider
 - OAuth 2.0 Authorization Code flow with PKCE (S256)
 - Dynamic client registration

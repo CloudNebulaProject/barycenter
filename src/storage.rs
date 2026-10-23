@@ -18,6 +18,7 @@ pub struct Client {
     pub client_name: Option<String>,
     pub redirect_uris: Vec<String>,
     pub created_at: i64,
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +129,7 @@ pub async fn create_client(db: &DatabaseConnection, input: NewClient) -> Result<
         client_name: Set(input.client_name.clone()),
         redirect_uris: Set(redirect_uris_json),
         created_at: Set(created_at),
+        trusted: Set(false),
     };
 
     client.insert(db).await?;
@@ -138,6 +140,7 @@ pub async fn create_client(db: &DatabaseConnection, input: NewClient) -> Result<
         client_name: input.client_name,
         redirect_uris: input.redirect_uris,
         created_at,
+        trusted: false,
     })
 }
 
@@ -230,10 +233,27 @@ pub async fn get_client(
             client_name: model.client_name,
             redirect_uris,
             created_at: model.created_at,
+            trusted: model.trusted,
         }))
     } else {
         Ok(None)
     }
+}
+
+/// Set the admin-controlled consent bypass flag. Returns false if the client is absent.
+pub async fn set_client_trusted(
+    db: &DatabaseConnection,
+    client_id: &str,
+    trusted: bool,
+) -> Result<bool, CrabError> {
+    use entities::client::{Column, Entity};
+
+    let result = Entity::update_many()
+        .col_expr(Column::Trusted, sea_orm::sea_query::Expr::value(trusted))
+        .filter(Column::ClientId.eq(client_id))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected > 0)
 }
 
 // One parameter per persisted column; callers are the authorize endpoint and tests.
@@ -1658,6 +1678,7 @@ mod tests {
 
         assert!(!client.client_id.is_empty());
         assert!(!client.client_secret.is_empty());
+        assert!(!client.trusted);
         assert_eq!(client.client_name, Some("Test Client".to_string()));
     }
 
@@ -1683,6 +1704,34 @@ mod tests {
 
         assert_eq!(retrieved.client_id, created.client_id);
         assert_eq!(retrieved.client_secret, created.client_secret);
+    }
+
+    #[tokio::test]
+    async fn test_set_client_trusted() {
+        let test_db = TestDb::new().await;
+        let db = test_db.connection();
+        // Unknown metadata cannot grant trust even when deserialized directly.
+        let input: NewClient = serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://example.com/callback"],
+            "trusted": true
+        }))
+        .unwrap();
+        let client = create_client(db, input).await.unwrap();
+        assert!(!client.trusted);
+        assert!(!set_client_trusted(db, "missing", true).await.unwrap());
+        for trusted in [true, true, false, false] {
+            assert!(set_client_trusted(db, &client.client_id, trusted)
+                .await
+                .unwrap());
+            assert_eq!(
+                get_client(db, &client.client_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .trusted,
+                trusted
+            );
+        }
     }
 
     #[tokio::test]

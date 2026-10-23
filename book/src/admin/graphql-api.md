@@ -9,7 +9,7 @@ The admin API serves two independent GraphQL schemas, each at its own endpoint:
 | Endpoint | Playground | Purpose |
 |---|---|---|
 | `POST /admin/graphql` | `GET /admin/playground` | Entity CRUD operations via [Seaography](./entity-crud.md) |
-| `POST /admin/jobs` | `GET /admin/jobs/playground` | [Job management](./job-management.md) and [user 2FA management](./user-2fa.md) |
+| `POST /admin/jobs` | `GET /admin/jobs/playground` | [Job management](./job-management.md), [user 2FA management](./user-2fa.md), and client trust |
 
 ### Entity CRUD Schema (`/admin/graphql`)
 
@@ -27,6 +27,47 @@ This schema provides custom queries and mutations for operational tasks that go 
 - **Manage user 2FA settings** (enable/disable 2FA requirements, query enrollment status).
 
 See [Job Management](./job-management.md) and [User 2FA Management](./user-2fa.md) for details.
+
+## Client Trust
+
+The custom schema at `POST /admin/jobs` exposes:
+
+```graphql
+setClientTrusted(clientId: String!, trusted: Boolean!): ClientGql!
+```
+
+For example, after registering Sokar, use its actual client ID:
+
+```graphql
+mutation {
+  setClientTrusted(clientId: "SOKAR_CLIENT_ID", trusted: true) {
+    clientId
+    clientName
+    redirectUris
+    trusted
+  }
+}
+```
+
+Set `trusted: false` to restore normal consent checks. The mutation returns safe
+client metadata without the secret, or a GraphQL error with code
+`barycenter::client::not_found` and recovery help if the client is absent.
+`trusted` is also exposed by the generated client entity queries at
+`/admin/graphql`. This uses the existing admin port's network/proxy access model;
+it is not a public OIDC mutation and does not add a new authentication mechanism.
+
+Alternatively, with access to the configured database:
+
+```bash
+barycenter --config /path/to/config.toml client trust SOKAR_CLIENT_ID
+barycenter --config /path/to/config.toml client trust SOKAR_CLIENT_ID --untrust
+```
+
+The CLI exits nonzero for a missing client. Trust skips interactive consent only;
+login and 2FA remain required, `prompt=consent` forces consent, and `prompt=none`
+retains its existing session and prior-grant checks. See
+[Consent Flow](../authentication/consent.md#trusted-first-party-clients) for
+implicit grants and revocation semantics.
 
 ## Accessing the Admin API
 

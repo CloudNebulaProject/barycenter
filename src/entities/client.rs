@@ -10,6 +10,7 @@ pub struct Model {
     pub client_name: Option<String>,
     pub redirect_uris: String, // JSON-encoded Vec<String>
     pub created_at: i64,
+    pub trusted: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

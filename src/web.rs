@@ -773,24 +773,16 @@ async fn authorize(
     let scope = q.scope.clone();
     let nonce = q.nonce.clone();
 
-    // Check if user has consented to this client/scope combination
-    // Skip consent check if:
-    // 1. BARYCENTER_SKIP_CONSENT env var is set (for testing)
-    // 2. prompt=consent is set (force re-consent)
+    // Trust bypasses interactive consent only, after session and 2FA checks.
+    // Keep prompt=none's existing prior-consent requirement and error behavior.
     let skip_consent = std::env::var("BARYCENTER_SKIP_CONSENT").is_ok();
-    let prompt_values: Vec<&str> = q
-        .prompt
-        .as_ref()
-        .map(|p| p.split_whitespace().collect())
-        .unwrap_or_default();
     let force_consent = prompt_values.contains(&"consent");
+    let trusted_bypass = client.trusted && !has_prompt_none && !force_consent;
+    let has_consent = storage::has_consent(&state.db, &q.client_id, &subject, &scope)
+        .await
+        .unwrap_or(false);
 
-    if !skip_consent
-        && (force_consent
-            || !storage::has_consent(&state.db, &q.client_id, &subject, &scope)
-                .await
-                .unwrap_or(false))
-    {
+    if force_consent || (!skip_consent && !trusted_bypass && !has_consent) {
         // No consent exists or force re-consent - redirect to consent page
         // If prompt=none, return error instead of redirecting
         if prompt_values.contains(&"none") {
@@ -851,6 +843,22 @@ async fn authorize(
         );
 
         return Redirect::temporary(&consent_url).into_response();
+    }
+
+    // Record implicit grants for listings/revocation without adding a row on every request.
+    if trusted_bypass && !has_consent {
+        if let Err(error) =
+            storage::grant_consent(&state.db, &q.client_id, &subject, &scope, None).await
+        {
+            tracing::error!(%error, "Failed to record trusted client consent");
+            return oauth_error_redirect(
+                &q.redirect_uri,
+                q.state.as_deref(),
+                "server_error",
+                "could not record consent",
+            )
+            .into_response();
+        }
     }
 
     // Handle different response types

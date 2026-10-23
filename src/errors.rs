@@ -37,6 +37,13 @@ pub enum CrabError {
     )]
     Configuration(String),
 
+    #[error("Cannot set client trust: client not found.")]
+    #[diagnostic(
+        code(barycenter::client::not_found),
+        help("Check the client ID in the admin client listing, then retry.")
+    )]
+    ClientNotFound,
+
     #[error("Bad request: {0}")]
     #[diagnostic(code(barycenter::bad_request))]
     BadRequest(String),
