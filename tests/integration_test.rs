@@ -310,6 +310,17 @@ fn trusted_client_consent_and_admin_management() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
+    let query_clients = |id: &str| -> serde_json::Value {
+        http.post(format!("{}/admin/jobs", server.admin_url))
+            .json(&serde_json::json!({
+                "query": "query($id: String!) { client(clientId: $id) { clientId clientName redirectUris trusted } clients { clientId clientName redirectUris trusted } }",
+                "variables": {"id": id}
+            })).send().unwrap().json().unwrap()
+    };
+    let empty = query_clients("missing-client");
+    assert!(empty.get("errors").is_none(), "{empty}");
+    assert!(empty["data"]["client"].is_null());
+    assert!(empty["data"]["clients"].as_array().unwrap().is_empty());
     let registration = http
         .post(format!("{}/connect/register", server.base_url()))
         .json(&serde_json::json!({
@@ -330,15 +341,64 @@ fn trusted_client_consent_and_admin_management() {
                 "variables": {"id": id, "trusted": trusted}
             })).send().unwrap().json().unwrap()
     };
-    let listing: serde_json::Value = http
-        .post(format!("{}/admin/graphql", server.admin_url))
-        .json(&serde_json::json!({"query": "{ clients { nodes { clientId trusted } } }"}))
-        .send()
-        .unwrap()
-        .json()
-        .unwrap();
+    let listing = query_clients(client_id);
     assert!(listing.get("errors").is_none(), "{listing}");
-    assert_eq!(listing["data"]["clients"]["nodes"][0]["trusted"], false);
+    assert_eq!(listing["data"]["clients"].as_array().unwrap().len(), 1);
+    assert_eq!(listing["data"]["clients"][0]["trusted"], false);
+    assert_eq!(listing["data"]["client"]["clientId"], client_id);
+    assert_eq!(listing["data"]["client"], listing["data"]["clients"][0]);
+    assert!(listing["data"]["client"].get("clientSecret").is_none());
+    assert!(listing["data"]["clients"][0].get("clientSecret").is_none());
+    assert!(!listing
+        .to_string()
+        .contains(registration["client_secret"].as_str().unwrap()));
+    let missing_client = query_clients("missing-client");
+    assert!(missing_client.get("errors").is_none(), "{missing_client}");
+    assert!(missing_client["data"]["client"].is_null());
+
+    // Explicitly requesting a secret must fail schema validation for both queries.
+    for query in [
+        "{ clients { clientId clientSecret } }".to_owned(),
+        format!("{{ client(clientId: \"{client_id}\") {{ clientId clientSecret }} }}"),
+    ] {
+        let rejected: serde_json::Value = http
+            .post(format!("{}/admin/jobs", server.admin_url))
+            .json(&serde_json::json!({"query": query}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert!(rejected["data"].is_null());
+        assert!(rejected["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown field \"clientSecret\""));
+    }
+
+    // Restoring the original Seaography wiring must keep raw credential reads unavailable.
+    for field in [
+        "clients { nodes { clientSecret } }",
+        "users { nodes { passwordHash } }",
+        "sessions { nodes { sessionId } }",
+        "accessTokens { nodes { token } }",
+        "refreshTokens { nodes { token } }",
+    ] {
+        let raw_entities: serde_json::Value = http
+            .post(format!("{}/admin/graphql", server.admin_url))
+            .json(&serde_json::json!({"query": format!("{{ {field} }}")}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert!(raw_entities["data"].is_null(), "{raw_entities}");
+        assert!(
+            raw_entities["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("DatabaseConnection"),
+            "{raw_entities}"
+        );
+    }
 
     let (authenticated, _) = login_and_get_client(server.base_url(), "trusted-user", "testpass123");
     let mut authorize = url::Url::parse(&format!("{}/authorize", server.base_url())).unwrap();
@@ -367,6 +427,13 @@ fn trusted_client_consent_and_admin_management() {
     assert!(trusted.get("errors").is_none(), "{trusted}");
     assert_eq!(trusted["data"]["setClientTrusted"]["trusted"], true);
     assert_eq!(trusted["data"]["setClientTrusted"]["clientId"], client_id);
+    assert!(trusted["data"]["setClientTrusted"]
+        .get("clientSecret")
+        .is_none());
+    let listing = query_clients(client_id);
+    assert!(listing.get("errors").is_none(), "{listing}");
+    assert_eq!(listing["data"]["client"]["trusted"], true);
+    assert_eq!(listing["data"]["clients"][0]["trusted"], true);
     // Trust does not change login, forced reauthentication, or silent consent requirements.
     assert!(location(&http, None).starts_with("/login?"));
     assert!(location(&http, Some("none")).contains("error=login_required"));
@@ -420,6 +487,10 @@ fn trusted_client_consent_and_admin_management() {
     let untrusted = mutation(client_id, false);
     assert!(untrusted.get("errors").is_none(), "{untrusted}");
     assert_eq!(untrusted["data"]["setClientTrusted"]["trusted"], false);
+    let listing = query_clients(client_id);
+    assert!(listing.get("errors").is_none(), "{listing}");
+    assert_eq!(listing["data"]["client"]["trusted"], false);
+    assert_eq!(listing["data"]["clients"][0]["trusted"], false);
     // The recorded grant survives removing trust, but does not cover new scopes.
     assert!(location(&authenticated, None).contains("code="));
     let mut expanded = authorize.clone();

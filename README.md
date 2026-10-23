@@ -196,6 +196,13 @@ mutation {
 }
 ```
 
+Inspect client trust through `client(clientId: String!): ClientGql` or
+`clients: [ClientGql!]!` at the same `/admin/jobs` endpoint. Both return only
+`clientId`, `clientName`, `redirectUris`, and `trusted`; client secrets are not
+exposed. The generated Seaography entity reads at `/admin/graphql` remain
+unavailable. The admin GraphQL listener has no built-in authentication layer;
+restrict access through the existing network/proxy controls.
+
 Use `trusted: false` to remove trust, or run
 `barycenter client trust CLIENT_ID [--untrust]` against the configured database.
 Public `/connect/register` requests cannot grant trust. Login and 2FA still apply;

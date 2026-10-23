@@ -714,6 +714,38 @@ pub struct AdminQuery;
 
 #[Object]
 impl AdminQuery {
+    /// Get safe client metadata, or null if the client does not exist.
+    async fn client(&self, ctx: &Context<'_>, client_id: String) -> Result<Option<ClientGql>> {
+        let db = ctx.data::<Arc<DatabaseConnection>>()?;
+        let client = client_metadata_query()
+            .filter(entities::client::Column::ClientId.eq(client_id))
+            .into_model::<ClientMetadata>()
+            .one(db.as_ref())
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Failed to read client metadata");
+                client_query_error()
+            })?;
+        client.map(ClientGql::try_from).transpose()
+    }
+
+    /// List client metadata without credentials.
+    async fn clients(&self, ctx: &Context<'_>) -> Result<Vec<ClientGql>> {
+        use sea_orm::QueryOrder;
+
+        let db = ctx.data::<Arc<DatabaseConnection>>()?;
+        let clients = client_metadata_query()
+            .order_by_asc(entities::client::Column::ClientId)
+            .into_model::<ClientMetadata>()
+            .all(db.as_ref())
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Failed to list client metadata");
+                client_query_error()
+            })?;
+        clients.into_iter().map(ClientGql::try_from).collect()
+    }
+
     /// Get recent job executions with optional filtering
     async fn job_logs(
         &self,
@@ -1070,6 +1102,53 @@ fn client_not_found() -> Error {
         extensions.set(
             "help",
             "Check the client ID in the admin client listing, then retry.",
+        );
+    })
+}
+
+// Select only fields intended for the hand-written client metadata API.
+#[derive(sea_orm::FromQueryResult)]
+struct ClientMetadata {
+    client_id: String,
+    client_name: Option<String>,
+    redirect_uris: String,
+    trusted: bool,
+}
+
+fn client_metadata_query() -> sea_orm::Select<entities::client::Entity> {
+    use entities::client::{Column, Entity};
+
+    Entity::find().select_only().columns([
+        Column::ClientId,
+        Column::ClientName,
+        Column::RedirectUris,
+        Column::Trusted,
+    ])
+}
+
+impl TryFrom<ClientMetadata> for ClientGql {
+    type Error = Error;
+
+    fn try_from(client: ClientMetadata) -> Result<Self> {
+        let redirect_uris = serde_json::from_str(&client.redirect_uris).map_err(|error| {
+            tracing::error!(%error, "Failed to decode client redirect URIs");
+            client_query_error()
+        })?;
+        Ok(Self {
+            client_id: client.client_id,
+            client_name: client.client_name,
+            redirect_uris,
+            trusted: client.trusted,
+        })
+    }
+}
+
+fn client_query_error() -> Error {
+    Error::new("Cannot read client metadata.").extend_with(|_, extensions| {
+        extensions.set("code", "barycenter::client::read_failed");
+        extensions.set(
+            "help",
+            "Check the admin server database diagnostics and client metadata.",
         );
     })
 }
