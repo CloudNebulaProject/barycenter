@@ -1,6 +1,6 @@
 use barycenter::*;
 use clap::Parser;
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, WrapErr};
 use sea_orm_migration::MigratorTrait;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -21,11 +21,27 @@ struct Cli {
 
 #[derive(Parser, Debug)]
 enum Command {
+    /// Manage registered clients using the configured database
+    Client {
+        #[command(subcommand)]
+        command: ClientCommand,
+    },
     /// Sync users from a JSON file (idempotent)
     SyncUsers {
         /// Path to JSON file containing users
         #[arg(short, long)]
         file: String,
+    },
+}
+
+#[derive(Parser, Debug)]
+enum ClientCommand {
+    /// Skip interactive consent for a first-party client
+    Trust {
+        client_id: String,
+        /// Restore the normal consent requirement
+        #[arg(long)]
+        untrust: bool,
     },
 }
 
@@ -67,6 +83,19 @@ async fn main() -> Result<()> {
 
     // Handle subcommands
     match cli.command {
+        Some(Command::Client {
+            command: ClientCommand::Trust { client_id, untrust },
+        }) => {
+            if !storage::set_client_trusted(&db, &client_id, !untrust)
+                .await
+                .wrap_err("Failed to update client trust in the configured database")?
+            {
+                return Err(errors::CrabError::ClientNotFound.into());
+            }
+            tracing::info!(%client_id, trusted = !untrust, "Client trust updated");
+            return Ok(());
+        }
+
         Some(Command::SyncUsers { file }) => {
             // Run user sync and exit
             user_sync::sync_users_from_file(&db, &file).await?;

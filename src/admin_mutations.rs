@@ -18,6 +18,38 @@ pub struct AdminMutation;
 
 #[Object]
 impl AdminMutation {
+    /// Allow or disallow a first-party client to skip interactive consent.
+    async fn set_client_trusted(
+        &self,
+        ctx: &Context<'_>,
+        client_id: String,
+        trusted: bool,
+    ) -> Result<ClientGql> {
+        let db = ctx.data::<Arc<DatabaseConnection>>()?;
+        let found = storage::set_client_trusted(db.as_ref(), &client_id, trusted)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Failed to update client trust");
+                Error::new(
+                    "Cannot update client trust. Check the admin server database diagnostics.",
+                )
+                .extend_with(|_, extensions| {
+                    extensions.set("code", "barycenter::db");
+                })
+            })?;
+        if !found {
+            return Err(client_not_found());
+        }
+        let client = storage::get_client(db.as_ref(), &client_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Client trust updated but could not read client");
+                Error::new("Client trust was updated, but the client could not be read. Query the client before retrying.")
+            })?
+            .ok_or_else(|| Error::new("Client trust was updated, but the client no longer exists. Check the admin client listing."))?;
+        Ok(ClientGql::from(client))
+    }
+
     /// Manually trigger a background job by name
     async fn trigger_job(&self, ctx: &Context<'_>, job_name: String) -> Result<JobTriggerResult> {
         let db = ctx
@@ -682,6 +714,38 @@ pub struct AdminQuery;
 
 #[Object]
 impl AdminQuery {
+    /// Get safe client metadata, or null if the client does not exist.
+    async fn client(&self, ctx: &Context<'_>, client_id: String) -> Result<Option<ClientGql>> {
+        let db = ctx.data::<Arc<DatabaseConnection>>()?;
+        let client = client_metadata_query()
+            .filter(entities::client::Column::ClientId.eq(client_id))
+            .into_model::<ClientMetadata>()
+            .one(db.as_ref())
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Failed to read client metadata");
+                client_query_error()
+            })?;
+        client.map(ClientGql::try_from).transpose()
+    }
+
+    /// List client metadata without credentials.
+    async fn clients(&self, ctx: &Context<'_>) -> Result<Vec<ClientGql>> {
+        use sea_orm::QueryOrder;
+
+        let db = ctx.data::<Arc<DatabaseConnection>>()?;
+        let clients = client_metadata_query()
+            .order_by_asc(entities::client::Column::ClientId)
+            .into_model::<ClientMetadata>()
+            .all(db.as_ref())
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Failed to list client metadata");
+                client_query_error()
+            })?;
+        clients.into_iter().map(ClientGql::try_from).collect()
+    }
+
     /// Get recent job executions with optional filtering
     async fn job_logs(
         &self,
@@ -1010,4 +1074,81 @@ impl From<&federation::storage::TrustedPeer> for TrustedPeerGql {
             created_at: p.created_at.clone(),
         }
     }
+}
+
+/// Client metadata returned by trust management. Credentials are omitted.
+#[derive(SimpleObject)]
+pub struct ClientGql {
+    pub client_id: String,
+    pub client_name: Option<String>,
+    pub redirect_uris: Vec<String>,
+    pub trusted: bool,
+}
+
+impl From<storage::Client> for ClientGql {
+    fn from(client: storage::Client) -> Self {
+        Self {
+            client_id: client.client_id,
+            client_name: client.client_name,
+            redirect_uris: client.redirect_uris,
+            trusted: client.trusted,
+        }
+    }
+}
+
+fn client_not_found() -> Error {
+    Error::new(crate::errors::CrabError::ClientNotFound.to_string()).extend_with(|_, extensions| {
+        extensions.set("code", "barycenter::client::not_found");
+        extensions.set(
+            "help",
+            "Check the client ID in the admin client listing, then retry.",
+        );
+    })
+}
+
+// Select only fields intended for the hand-written client metadata API.
+#[derive(sea_orm::FromQueryResult)]
+struct ClientMetadata {
+    client_id: String,
+    client_name: Option<String>,
+    redirect_uris: String,
+    trusted: bool,
+}
+
+fn client_metadata_query() -> sea_orm::Select<entities::client::Entity> {
+    use entities::client::{Column, Entity};
+
+    Entity::find().select_only().columns([
+        Column::ClientId,
+        Column::ClientName,
+        Column::RedirectUris,
+        Column::Trusted,
+    ])
+}
+
+impl TryFrom<ClientMetadata> for ClientGql {
+    type Error = Error;
+
+    fn try_from(client: ClientMetadata) -> Result<Self> {
+        let redirect_uris = serde_json::from_str(&client.redirect_uris).map_err(|error| {
+            tracing::error!(%error, "Failed to decode client redirect URIs");
+            client_query_error()
+        })?;
+        Ok(Self {
+            client_id: client.client_id,
+            client_name: client.client_name,
+            redirect_uris,
+            trusted: client.trusted,
+        })
+    }
+}
+
+fn client_query_error() -> Error {
+    Error::new("Cannot read client metadata.").extend_with(|_, extensions| {
+        extensions.set("code", "barycenter::client::read_failed");
+        extensions.set(
+            "help",
+            "Check the admin server database diagnostics and client metadata.",
+        );
+    })
 }

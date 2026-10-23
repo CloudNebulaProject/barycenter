@@ -13,6 +13,8 @@ mod m20261003_000001_onboarding_invitations;
 
 mod m20261003_000002_password_resets;
 
+mod m20261023_000001_add_client_trusted;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -29,6 +31,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260407_000002_create_peer_requests::Migration),
             Box::new(m20261003_000001_onboarding_invitations::Migration),
             Box::new(m20261003_000002_password_resets::Migration),
+            Box::new(m20261023_000001_add_client_trusted::Migration),
         ]
     }
 }

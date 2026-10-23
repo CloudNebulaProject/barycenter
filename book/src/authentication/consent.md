@@ -95,6 +95,36 @@ When `prompt=consent` is specified:
 - If the user approves, the consent record is updated with the new `granted_at` timestamp.
 - If the user denies, the existing consent record is not modified.
 
+## Trusted First-Party Clients
+
+An administrator can mark a registered first-party client as `trusted`. All new
+and existing clients default to `false`; public dynamic registration cannot set
+this flag, including when a request contains `"trusted": true`.
+
+For a trusted client, an authenticated user proceeds directly to the callback
+without a consent screen. Login, session expiry, reauthentication and 2FA checks
+still apply. `prompt=consent` forces the consent screen even for trusted clients.
+`prompt=none` keeps the existing behavior: without a session it returns
+`login_required`, and without a grant covering the scopes it returns
+`consent_required`.
+
+When interactive consent is skipped, Barycenter records an implicit grant for the
+requested scopes unless an active grant already covers them. These grants appear
+in the existing consent storage/listing and can be revoked normally. While the
+client remains trusted, a later interactive authorization can create a new grant;
+to restore consent prompts, remove trust and revoke existing grants. Removing
+trust alone does not delete prior grants or revoke tokens.
+
+Use `setClientTrusted` at the admin service's `POST /admin/jobs` endpoint, or use
+the local database administration command:
+
+```bash
+barycenter --config /path/to/config.toml client trust CLIENT_ID
+barycenter --config /path/to/config.toml client trust CLIENT_ID --untrust
+```
+
+See [Admin GraphQL API](../admin/graphql-api.md#client-trust) for the mutation.
+
 ## Skipping Consent for Development
 
 For development and testing environments, the consent flow can be bypassed entirely using the `BARYCENTER_SKIP_CONSENT` environment variable:
@@ -103,11 +133,11 @@ For development and testing environments, the consent flow can be bypassed entir
 export BARYCENTER_SKIP_CONSENT=true
 ```
 
-When this variable is set to `true`:
+When this variable is present (any value, including `false`):
 
-- The consent page is never shown.
-- All authorization requests are treated as if the user approved.
-- No consent records are written to the database.
+- Consent is skipped unless `prompt=consent` forces the screen.
+- Requests that skip consent are treated as if the user approved.
+- This test bypass alone does not write consent records. Trusted clients still record implicit grants.
 
 > **Warning**: Never enable `BARYCENTER_SKIP_CONSENT` in production. Skipping consent violates user expectations and may conflict with regulatory requirements (e.g., GDPR, which requires informed consent for data sharing).
 
@@ -125,6 +155,8 @@ GET /authorize
   +-- 2FA required and not verified? --> Redirect to /login/2fa
   |
   +-- prompt=consent? --> Yes --> Show consent page
+  |
+  +-- Trusted client (interactive request)? --> Yes --> Record implicit grant, issue code
   |
   +-- Prior consent covers requested scopes? --> Yes --> Issue authorization code
   |
